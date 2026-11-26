@@ -1,4 +1,5 @@
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
@@ -15,8 +16,12 @@ import {
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import type { PiSettings } from "../settings.ts";
 import { PI_ARGUMENTS_WITH_VALUES, resolvePiLaunchArgs } from "./mcpInjection.ts";
+import { PI_FLAVOR, type PiFlavor } from "./flavor.ts";
 
-const PiScanState = Schema.Struct({ sessionId: Schema.mutableKey(Schema.String) });
+const PiScanState = Schema.Struct({
+  sessionId: Schema.mutableKey(Schema.String),
+  ompTitle: Schema.mutableKey(Schema.optional(Schema.Boolean)),
+});
 const Usage = Schema.Struct({
   input: Schema.optional(Schema.Unknown),
   output: Schema.optional(Schema.Unknown),
@@ -25,9 +30,14 @@ const Usage = Schema.Struct({
   reasoning: Schema.optional(Schema.Unknown),
   cost: Schema.optional(Schema.Struct({ total: Schema.Unknown })),
 });
-const Identity = { id: Schema.NonEmptyString, timestamp: Schema.String };
+const Identity = {
+  id: Schema.NonEmptyString,
+  timestamp: Schema.String,
+  runtime: Schema.optional(Schema.Struct({ version: Schema.String })),
+};
 const Model = { provider: Schema.NonEmptyString, model: Schema.NonEmptyString };
 const Entry = Schema.Union([
+  Schema.Struct({ type: Schema.Literal("title"), v: Schema.Literal(1) }),
   Schema.Struct({ type: Schema.Literal("session"), id: Schema.NonEmptyString }),
   Schema.Struct({
     ...Identity,
@@ -51,14 +61,25 @@ const Entry = Schema.Union([
 ]);
 const decodeEntry = Schema.decodeUnknownOption(Entry);
 
-function parseRecord(parsed: unknown, state: typeof PiScanState.Type): readonly UsageRecord[] {
+function parseRecord(
+  flavor: PiFlavor,
+  parsed: unknown,
+  state: typeof PiScanState.Type,
+): readonly UsageRecord[] {
   const decoded = decodeEntry(parsed);
   if (Option.isNone(decoded)) return [];
   const entry = decoded.value;
+  if (entry.type === "title") {
+    state.ompTitle = true;
+    return [];
+  }
   if (entry.type === "session") {
     state.sessionId = entry.id;
     return [];
   }
+  // Both CLIs honor PI_CODING_AGENT_DIR. Only OMP writes the title preamble and runtime stamp.
+  if ((state.ompTitle === true || entry.runtime !== undefined) !== (flavor.binaryName === "omp"))
+    return [];
   const timestampMs = parseTimestampMs(entry.timestamp);
   if (timestampMs === null) return [];
   const source = entry.type === "message" ? entry.message : entry;
@@ -87,7 +108,7 @@ function parseRecord(parsed: unknown, state: typeof PiScanState.Type): readonly 
   if (totalTokens(totals) === 0 && reportedCostUsd === null) return [];
   return [
     {
-      provider: "pi",
+      provider: flavor.usageProvider,
       timestampMs,
       model,
       ...(rateModel === undefined ? {} : { rateModel }),
@@ -96,68 +117,140 @@ function parseRecord(parsed: unknown, state: typeof PiScanState.Type): readonly 
       reportedCostUsd,
       speed: "standard",
       // Forks preserve IDs/timestamps; short random IDs need timestamp/model to avoid cross-session collisions.
-      dedupeKey: JSON.stringify(["pi", entry.id, entry.timestamp, model]),
+      dedupeKey: JSON.stringify([flavor.usageProvider, entry.id, entry.timestamp, model]),
     },
   ];
 }
 
-export const piUsageFormat: TranscriptUsageFormat<typeof PiScanState.Type> = {
-  selectFields: {
-    type: true,
-    id: true,
-    timestamp: true,
-    provider: true,
-    model: true,
-    usage: true,
-    message: { role: true, provider: true, model: true, responseModel: true, usage: true },
-  },
-  usageMarkers: ['"usage"', '"session"'],
-  parseLine: (line, state) => {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(line);
-    } catch {
-      return [];
-    }
-    return parseRecord(parsed, state);
-  },
-  parseProjected: parseRecord,
-  state: { initial: () => ({ sessionId: "" }), schema: PiScanState },
-};
+function makePiUsageFormat(flavor: PiFlavor): TranscriptUsageFormat<typeof PiScanState.Type> {
+  return {
+    selectFields: {
+      type: true,
+      id: true,
+      timestamp: true,
+      v: true,
+      runtime: { version: true },
+      provider: true,
+      model: true,
+      usage: true,
+      message: { role: true, provider: true, model: true, responseModel: true, usage: true },
+    },
+    usageMarkers: ['"usage"', '"session"', '"title"'],
+    parseLine: (line, state) => {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(line);
+      } catch {
+        return [];
+      }
+      return parseRecord(flavor, parsed, state);
+    },
+    parseProjected: (projected, state) => parseRecord(flavor, projected, state),
+    state: { initial: () => ({ sessionId: "" }), schema: PiScanState },
+  };
+}
 
-export const piUsageReader: ProviderUsageReader<PiSettings, Path.Path> = {
-  kind: "transcripts",
-  provider: "pi",
-  format: piUsageFormat,
-  // Pi model IDs are `<provider>/<rate model>`.
-  rateModel: (model) => model.slice(model.indexOf("/") + 1),
-  directories: Effect.fn("piUsageReader.directories")(function* ({ config, environment }) {
-    const path = yield* Path.Path;
-    const home = yield* HostProcess.HomeDirectory;
-    const platform = yield* HostProcess.Platform;
-    const launchHome = piHome(environment, home, platform);
-    const sessionDirArg = config === undefined ? undefined : piLaunchSessionDir(config.launchArgs);
-    const launchDir =
-      sessionDirArg === undefined ? undefined : expandHomePath(sessionDirArg, launchHome);
-    // --session-dir moves only T3-launched sessions; terminal sessions stay in Pi's own directory.
-    return [
-      ...(launchDir !== undefined && path.isAbsolute(launchDir)
-        ? [{ dir: path.resolve(launchDir) }]
-        : []),
-      { dir: resolvePiSessionsDir(environment, launchHome, path) },
-    ];
-  }),
-};
+export const piUsageFormat = makePiUsageFormat(PI_FLAVOR);
 
-function piLaunchSessionDir(launchArgs: string): string | undefined {
-  const resolved = resolvePiLaunchArgs(launchArgs);
-  if (!resolved.ok) return undefined;
+export function makePiUsageReader(
+  flavor: PiFlavor,
+): ProviderUsageReader<PiSettings, Path.Path | FileSystem.FileSystem> {
+  return {
+    kind: "transcripts",
+    provider: flavor.usageProvider,
+    format: flavor.binaryName === "pi" ? piUsageFormat : makePiUsageFormat(flavor),
+    // Pi model IDs are `<provider>/<rate model>`.
+    rateModel: (model) => model.slice(model.indexOf("/") + 1),
+    directories: Effect.fn(`${flavor.displayName}UsageReader.directories`)(function* ({
+      config,
+      environment,
+    }) {
+      const path = yield* Path.Path;
+      const home = yield* HostProcess.HomeDirectory;
+      const platform = yield* HostProcess.Platform;
+      const launchHome = piHome(environment, home, platform);
+      const resolved = resolvePiLaunchArgs(config?.launchArgs ?? "", flavor);
+      const args = resolved.ok ? resolved.args : [];
+      const isOmp = flavor.binaryName === "omp";
+      const sessionDirArg = isOmp ? ompLaunchArg(args, "--session-dir") : piLaunchSessionDir(args);
+      const launchDir =
+        sessionDirArg === undefined || isOmp
+          ? sessionDirArg
+          : expandHomePath(sessionDirArg, launchHome);
+      if (isOmp) {
+        const defaultProfile = environment.OMP_PROFILE ?? environment.PI_PROFILE;
+        const launchProfile = ompLaunchArg(args, "--profile");
+        const profiles =
+          launchProfile === undefined || launchProfile === defaultProfile
+            ? [defaultProfile]
+            : [defaultProfile, launchProfile];
+        const dirs = new Set<string>();
+        if (launchDir && path.isAbsolute(launchDir)) dirs.add(path.resolve(launchDir));
+        // Relative OMP overrides resolve against each session's cwd, not the T3 server's.
+        const sessionOverride = environment.PI_CODING_AGENT_SESSION_DIR;
+        if (sessionOverride) {
+          if (path.isAbsolute(sessionOverride)) dirs.add(path.resolve(sessionOverride));
+          return [...dirs].map((dir) => ({ dir }));
+        }
+        for (const profile of profiles) {
+          const name = profile?.trim();
+          const named = name !== undefined && name !== "" && name !== "default";
+          if (named && !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(name)) continue;
+          const profileSegments = named ? ["profiles", name] : [];
+          const defaultDir = path.join(
+            launchHome,
+            environment.PI_CONFIG_DIR || flavor.defaultAgentDirSegments[0],
+            ...profileSegments,
+            "agent",
+          );
+          const override = named ? undefined : environment.PI_CODING_AGENT_DIR;
+          if (override && !path.isAbsolute(override)) continue;
+          const agentDir = override ? path.resolve(override) : defaultDir;
+          const xdgRoot = environment.XDG_DATA_HOME;
+          if (
+            agentDir === defaultDir &&
+            xdgRoot &&
+            (platform === "linux" || platform === "darwin")
+          ) {
+            // OMP uses XDG only after migration creates the profile's directory there.
+            const xdgDir = path.join(xdgRoot, "omp", ...profileSegments);
+            const fs = yield* FileSystem.FileSystem;
+            if (yield* fs.exists(xdgDir).pipe(Effect.orElseSucceed(() => false))) {
+              dirs.add(path.join(xdgDir, "sessions"));
+              continue;
+            }
+          }
+          dirs.add(path.join(agentDir, "sessions"));
+        }
+        return [...dirs].map((dir) => ({ dir }));
+      }
+      // --session-dir moves only T3-launched sessions; terminal sessions stay in Pi's own directory.
+      return [
+        ...(launchDir !== undefined && path.isAbsolute(launchDir)
+          ? [{ dir: path.resolve(launchDir) }]
+          : []),
+        { dir: resolvePiSessionsDir(environment, launchHome, path) },
+      ];
+    }),
+  };
+}
+
+// OMP's validated arguments never have flag-shaped values.
+export function ompLaunchArg(
+  args: ReadonlyArray<string>,
+  option: "--session-dir" | "--profile",
+): string | undefined {
+  const index = args.lastIndexOf(option);
+  return index === -1 ? undefined : args[index + 1];
+}
+
+function piLaunchSessionDir(args: ReadonlyArray<string>): string | undefined {
   let sessionDir: string | undefined;
-  for (let index = 0; index < resolved.args.length; index += 1) {
-    const arg = resolved.args[index];
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
     if (arg === undefined || !PI_ARGUMENTS_WITH_VALUES.has(arg)) continue;
     index += 1;
-    if (arg === "--session-dir") sessionDir = resolved.args[index] || undefined;
+    if (arg === "--session-dir") sessionDir = args[index] || undefined;
   }
   return sessionDir;
 }
@@ -181,7 +274,9 @@ export function resolvePiSessionsDir(
   if (sessionDir) return path.resolve(expandHomePath(sessionDir, home));
   const agentDir = environment.PI_CODING_AGENT_DIR?.trim();
   return path.resolve(
-    agentDir ? expandHomePath(agentDir, home) : path.join(home, ".pi", "agent"),
+    agentDir
+      ? expandHomePath(agentDir, home)
+      : path.join(home, ...PI_FLAVOR.defaultAgentDirSegments),
     "sessions",
   );
 }

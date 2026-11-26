@@ -269,6 +269,7 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
     readonly startupPresentation?: ServerConfig.StartupPresentation;
     readonly forceAutoBootstrapProjectFromCwd?: boolean;
     readonly rejectRunningServer?: boolean;
+    readonly useDevStateDirectory?: boolean;
     readonly selectAutomaticPort?: (
       preferred: number,
       host: string | undefined,
@@ -329,7 +330,7 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
   const rawCwd = Option.getOrElse(normalizedFlags.cwd, () => process.cwd());
   const cwd = path.resolve(yield* expandHomePath(rawCwd.trim()));
   const derivedPaths = yield* ServerConfig.deriveServerPaths(baseDir, devUrl, {
-    baseDirIsExplicit: Option.isSome(explicitBaseDir),
+    baseDirIsExplicit: Option.isSome(explicitBaseDir) && !options?.useDevStateDirectory,
   });
   // An interactive CLI must not start over a discovered server. Lifetime locking
   // and supervisor handoff are separate; this preflight cannot arbitrate two starts.
@@ -546,7 +547,7 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
 export const resolveCliAuthConfig = (
   flags: CliAuthLocationFlags,
   cliLogLevel: Option.Option<LogLevel.LogLevel>,
-  options?: { readonly quietLogs?: boolean },
+  options?: { readonly quietLogs?: boolean; readonly useDevStateDirectory?: boolean },
 ) => {
   const resolved = resolveServerConfig(
     {
@@ -565,6 +566,7 @@ export const resolveCliAuthConfig = (
       lan: Option.none(),
     },
     cliLogLevel,
+    options,
   );
   // Logs go to stdout, where --json and --token-only print, and resolving can
   // log, for example when it sweeps abandoned attachment uploads.

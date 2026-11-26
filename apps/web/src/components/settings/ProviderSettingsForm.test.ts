@@ -34,6 +34,17 @@ describe("ProviderSettingsForm helpers", () => {
     ]);
   });
 
+  it("offers OMP's own binary and launch arguments", () => {
+    const omp = providerClients.get(ProviderDriverKind.make("omp"));
+    expect(omp?.label).toBe("OMP");
+    expect(deriveProviderSettingsFields(omp!)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ key: "binaryPath", placeholder: "omp" }),
+        expect.objectContaining({ key: "launchArgs" }),
+      ]),
+    );
+  });
+
   it("preserves unknown config keys while omitting empty configurable fields", () => {
     const opencode = providerClients.get(ProviderDriverKind.make("opencode"));
     expect(opencode).toBeDefined();

@@ -1,5 +1,6 @@
 import {
   DEFAULT_MAX_TERMINAL_BUFFER_BYTES,
+  NATIVE_OMP_TERMINAL_ID,
   type EnvironmentId,
   type TerminalAttachInput,
   type TerminalCloseInput,
@@ -23,7 +24,12 @@ import {
   runAtomCommand,
 } from "./runtime.ts";
 import type { EnvironmentRegistry } from "../connection/registry.ts";
-import { subscribe, subscribeDynamic, type EnvironmentRpcInput } from "../rpc/client.ts";
+import {
+  openTerminal,
+  subscribe,
+  subscribeTerminal,
+  type EnvironmentRpcInput,
+} from "../rpc/client.ts";
 import {
   applyTerminalAttachStreamEvent,
   applyTerminalMetadataStreamEvent,
@@ -93,13 +99,11 @@ export function createTerminalEnvironmentAtoms<R, E>(
       subscribe: (input: EnvironmentRpcInput<typeof WS_METHODS.terminalAttach>) => {
         // Retry an unanswered first attach unchanged so it can still open the shell.
         let replied = false;
-        return subscribeDynamic(WS_METHODS.terminalAttach, () =>
-          Effect.sync(() => ({
-            ...input,
-            ...(replied ? { resume: true } : {}),
-            maxHistoryBytes: DEFAULT_MAX_TERMINAL_BUFFER_BYTES,
-          })),
-        ).pipe(
+        return subscribeTerminal(() => ({
+          ...input,
+          ...(replied ? { resume: true } : {}),
+          maxHistoryBytes: DEFAULT_MAX_TERMINAL_BUFFER_BYTES,
+        })).pipe(
           Stream.onFirst(() =>
             Effect.sync(() => {
               replied = true;
@@ -115,6 +119,7 @@ export function createTerminalEnvironmentAtoms<R, E>(
     open: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:terminal:open",
       tag: WS_METHODS.terminalOpen,
+      execute: openTerminal,
       scheduler: lifecycleScheduler,
       concurrency: lifecycleConcurrency,
     }),
@@ -285,7 +290,7 @@ export function createTerminalSession(
   let gridMeasured = false;
   let generation: number | null = null;
   let liveLifecycleVersion: number | null = null;
-  let initialInputPending = Boolean(options.initialInput);
+  let initialInputPending = terminalId !== NATIVE_OMP_TERMINAL_ID && Boolean(options.initialInput);
   let lastStatus: TerminalBufferState["status"] | null = null;
   let loggedFirstOutput = false;
   let commandRegistry: AtomRegistry.AtomRegistry | null = null;
@@ -342,6 +347,8 @@ export function createTerminalSession(
     registry: AtomRegistry.AtomRegistry,
     input: TerminalAttachInput,
   ) => {
+    // A native TUI's exit (including a CLI refusal) stays visible until explicitly reopened.
+    if (terminalId === NATIVE_OMP_TERMINAL_ID) return;
     const step = transitionTerminalLifecycle(lifecycle, event);
     lifecycle = step.state;
     if (step.command === "exit") {

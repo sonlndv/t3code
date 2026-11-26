@@ -13,6 +13,7 @@ import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
 import { checkPiProviderStatus } from "./status.ts";
+import { OMP_FLAVOR } from "./flavor.ts";
 
 const encoder = new TextEncoder();
 const decodeRpcRequest = Schema.decodeSync(
@@ -182,6 +183,63 @@ const BROKEN_ADVISORY = {
 } as const;
 
 describe("PiProvider", () => {
+  it.effect("reads the OMP catalog without starting a session or loading user extensions", () =>
+    Effect.gen(function* () {
+      const commands: Array<ReadonlyArray<string>> = [];
+      const spawner = ChildProcessSpawner.make((command) => {
+        if (!ChildProcess.isStandardCommand(command)) return Effect.die("Unexpected pipeline");
+        commands.push(command.args.map(String));
+        assert.equal(command.command, "custom-omp");
+        if (command.args[0] === "--version")
+          return Effect.succeed(processHandle({ stdout: "19.2.1" }));
+        assert.equal(command.options.env?.OMP_PROFILE, "work");
+        assert.equal(command.options.env?.PI_CODING_AGENT_DIR, "/isolated");
+        return Effect.succeed(
+          processHandle({
+            stdout: JSON.stringify({
+              models: [
+                {
+                  provider: "test",
+                  id: "demo",
+                  name: "Demo",
+                  reasoning: true,
+                  thinking: ["low", "high"],
+                },
+              ],
+            }),
+          }),
+        );
+      });
+      const snapshot = yield* checkPiProviderStatus(
+        {
+          ...settings,
+          binaryPath: "custom-omp",
+          launchArgs: "--profile=work -e user-extension.js --tools write",
+        },
+        { PI_CODING_AGENT_DIR: "/isolated" },
+        "/probe",
+        undefined,
+        OMP_FLAVOR,
+      ).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner));
+      assert.deepEqual(commands, [["--version"], ["models", "--json", "--no-extensions"]]);
+      assert.equal(snapshot.status, "ready");
+      assert.equal(snapshot.auth.status, "unknown");
+      assert.deepEqual(
+        snapshot.models.map((model) => [model.slug, model.name]),
+        [
+          ["default", "OMP default"],
+          ["test/demo", "Demo"],
+        ],
+      );
+      const descriptor = snapshot.models[1]?.capabilities?.optionDescriptors?.[0];
+      assert.sameMembers(descriptor?.type === "select" ? descriptor.options.map((o) => o.id) : [], [
+        "auto",
+        "off",
+        "low",
+        "high",
+      ]);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
   it.effect("reports a version the policy rates broken as an error", () =>
     Effect.gen(function* () {
       const snapshot = yield* checkPiProviderStatus(settings, undefined, undefined, () =>

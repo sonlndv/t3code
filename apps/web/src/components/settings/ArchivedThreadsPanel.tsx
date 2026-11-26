@@ -1,12 +1,25 @@
 import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
-import type { ContextMenuSource } from "@t3tools/contracts";
+import {
+  AuthOrchestrationOperateScope,
+  AuthTerminalOperateScope,
+  NATIVE_OMP_TERMINAL_ID,
+  type ContextMenuSource,
+  type ScopedThreadRef,
+} from "@t3tools/contracts";
 import { contextMenuSourceOf } from "../../contextMenuSource";
 import { m as resolveMessage } from "~/i18n/messages";
 import { settingsScopeEnvironmentLabels } from "./settingsScopeAxis";
 import { Spinner } from "~/components/ui/spinner";
 import { ArchiveIcon, ArchiveX, Trash2Icon } from "lucide-react";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
-import { presentThreadShell } from "@t3tools/client-runtime/state/shell";
+import { canOpenNativeOmpTerminal, presentThreadShell } from "@t3tools/client-runtime/state/shell";
+import * as Schema from "effect/Schema";
+import { TYPOGRAPHY_ADVANCED_STORAGE_KEY } from "../../appearanceFonts";
+import { useLocalStorage } from "../../hooks/useLocalStorage";
+import { useServerConfigs } from "../../state/entities";
+import { useEnvironmentsWithScope } from "../../state/session";
+import { terminalEnvironment } from "../../state/terminal";
+import { useAtomCommand } from "../../state/use-atom-command";
 import {
   type AtomCommandResult,
   isAtomCommandInterrupted,
@@ -25,9 +38,13 @@ import { useSearchableSetting } from "./settingsSearch";
 import { ProjectFavicon } from "../ProjectFavicon";
 
 import { msg, T, useGT, useMessages } from "gt-react";
-import { type ReactNode, useRef, useState } from "react";
+import { lazy, type ReactNode, Suspense, useRef, useState } from "react";
 import { observeIntersection } from "~/lib/observeIntersection";
 import { Tooltip, TooltipTrigger, TooltipPopup } from "../ui/tooltip";
+
+const TerminalViewport = lazy(() =>
+  import("../ThreadTerminalDrawer").then((module) => ({ default: module.TerminalViewport })),
+);
 
 const ARCHIVE_ACTIONS = [
   {
@@ -90,6 +107,20 @@ export function ArchivedThreadsPanel() {
   const m = useMessages();
   const { scope, groups: projectGroups, environments } = useSettingsScope();
   const { unarchiveThread, confirmAndDeleteThread } = useThreadActions();
+  const serverConfigs = useServerConfigs();
+  const terminalScopes = useEnvironmentsWithScope(environments, AuthTerminalOperateScope);
+  const threadScopes = useEnvironmentsWithScope(environments, AuthOrchestrationOperateScope);
+  const openTerminal = useAtomCommand(terminalEnvironment.open, { reportFailure: false });
+  const [nativeView, setNativeView] = useState<{
+    target: ScopedThreadRef;
+    title: string;
+    cwd: string;
+  } | null>(null);
+  const [advancedTypography] = useLocalStorage(
+    TYPOGRAPHY_ADVANCED_STORAGE_KEY,
+    false,
+    Schema.Boolean,
+  );
   const pendingActionsRef = useRef(new Set<string>());
   const [pendingKeys, setPendingKeys] = useState<ReadonlySet<string>>(() => new Set());
   const {
@@ -126,6 +157,9 @@ export function ArchivedThreadsPanel() {
     const threads = archivedSnapshots.flatMap(({ environmentId, snapshot }) =>
       snapshot.threads.map((thread) => ({
         ...presentThreadShell(environmentId, thread),
+        cwd:
+          thread.worktreePath ??
+          projectsByEnvironmentAndId.get(`${environmentId}:${thread.projectId}`)?.workspaceRoot,
         environmentLabel: environmentLabels.get(environmentId) ?? environmentId,
       })),
     );
@@ -214,7 +248,12 @@ export function ArchivedThreadsPanel() {
     );
   };
 
-  const handleThreadAction = async (action: ArchiveAction, thread: ArchivedThread) => {
+  const canOpenOmp = (thread: ArchivedThread) =>
+    !!thread.cwd &&
+    terminalScopes.has(thread.environmentId) &&
+    threadScopes.has(thread.environmentId) &&
+    canOpenNativeOmpTerminal(serverConfigs.get(thread.environmentId), thread);
+  const handleThreadAction = async (action: ArchiveAction | "omp", thread: ArchivedThread) => {
     const target = scopeThreadRef(thread.environmentId, thread.id);
     const key = scopedThreadKey(target);
     // Context menus can outlive their render, so checks and cleanup use the live set.
@@ -223,6 +262,22 @@ export function ArchivedThreadsPanel() {
     pending.add(key);
     setPendingKeys(new Set(pending));
     const result = await settlePromise(async () => {
+      if (action === "omp") {
+        if (!canOpenOmp(thread) || !thread.cwd) return null;
+        const opened = await openTerminal({
+          environmentId: thread.environmentId,
+          input: {
+            threadId: thread.id,
+            nativeOmpThreadId: thread.id,
+            terminalId: NATIVE_OMP_TERMINAL_ID,
+            cwd: thread.cwd,
+          },
+        });
+        if (opened._tag === "Success") {
+          setNativeView({ target, title: thread.title, cwd: opened.value.cwd });
+        }
+        return opened;
+      }
       const result = await (action === "unarchive"
         ? unarchiveThread(target)
         : confirmAndDeleteThread(target, thread.title));
@@ -234,7 +289,9 @@ export function ArchivedThreadsPanel() {
     });
     reportFailure(
       result._tag === "Failure" ? result : result.value,
-      m(ARCHIVE_ACTIONS.find((entry) => entry.action === action)!.failureTitle),
+      action === "omp"
+        ? gt("Archived thread action failed")
+        : m(ARCHIVE_ACTIONS.find((entry) => entry.action === action)!.failureTitle),
     );
   };
 
@@ -247,15 +304,18 @@ export function ArchivedThreadsPanel() {
     if (pending.has(scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)))) return;
     const result = await settlePromise(async () => {
       const clicked = await readLocalApi()?.contextMenu.show(
-        ARCHIVE_ACTIONS.map(({ action, label }) => ({
-          id: action,
-          label: m(label),
-          destructive: action === "delete",
-        })),
+        [
+          ...(canOpenOmp(thread) ? [{ id: "omp", label: gt("Open {app}", { app: "OMP" }) }] : []),
+          ...ARCHIVE_ACTIONS.map(({ action, label }) => ({
+            id: action,
+            label: m(label),
+            destructive: action === "delete",
+          })),
+        ],
         position,
         source,
       );
-      if (clicked === "unarchive" || clicked === "delete")
+      if (clicked === "omp" || clicked === "unarchive" || clicked === "delete")
         await handleThreadAction(clicked, thread);
     });
     reportFailure(result, gt("Archived thread action failed"));
@@ -288,6 +348,16 @@ export function ArchivedThreadsPanel() {
         }
         control={
           <div className="flex shrink-0 items-center gap-2">
+            {canOpenOmp(thread) ? (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={pendingKeys.has(threadKey)}
+                onClick={() => void handleThreadAction("omp", thread)}
+              >
+                {gt("Open {app}", { app: "OMP" })}
+              </Button>
+            ) : null}
             {ARCHIVE_ACTIONS.map(({ action, label, threadLabel, Icon }) => (
               <Tooltip key={action}>
                 <TooltipTrigger
@@ -312,6 +382,47 @@ export function ArchivedThreadsPanel() {
       />
     );
   };
+
+  const nativeConfig = nativeView && serverConfigs.get(nativeView.target.environmentId);
+  if (
+    nativeView &&
+    nativeConfig?.featureFlags?.nativeOmpTerminal &&
+    scope.environmentIds.includes(nativeView.target.environmentId) &&
+    terminalScopes.has(nativeView.target.environmentId) &&
+    threadScopes.has(nativeView.target.environmentId)
+  ) {
+    return (
+      <SettingsPageContainer width="expanded">
+        <SettingsSection
+          title={nativeView.title}
+          headerAction={
+            <Button variant="outline" size="sm" onClick={() => setNativeView(null)}>
+              {gt("Back to archive")}
+            </Button>
+          }
+        >
+          <p className="px-3 py-2 text-sm text-muted-foreground">
+            {gt("Quit OMP, then unarchive this thread to continue in chat.")}
+          </p>
+          <div className="h-[65dvh] min-h-48">
+            <Suspense fallback={<Spinner size="sm" />}>
+              <TerminalViewport
+                threadRef={nativeView.target}
+                threadId={nativeView.target.threadId}
+                terminalId={NATIVE_OMP_TERMINAL_ID}
+                terminalLabel="OMP"
+                cwd={nativeView.cwd}
+                advancedTypography={advancedTypography}
+                keybindings={nativeConfig.keybindings}
+                autoFocus
+                visible
+              />
+            </Suspense>
+          </div>
+        </SettingsSection>
+      </SettingsPageContainer>
+    );
+  }
 
   return (
     <SettingsPageContainer>

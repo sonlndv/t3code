@@ -20,6 +20,7 @@ import {
 } from "@t3tools/shared/toolOutput";
 
 import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
+import { spawnAndCollect } from "@t3tools/provider-core/server/snapshotProbe";
 
 export class PiRpcError extends Schema.TaggedError<PiRpcError>()("PiRpcError", {
   operation: Schema.String,
@@ -92,6 +93,40 @@ export interface PiRpcSpawnOptions {
   readonly cwd: string | undefined;
   readonly env: NodeJS.ProcessEnv;
 }
+
+// Older OMP releases can interpret unknown flags as extension flags. Check the
+// configured executable before trusting it to enforce the thread's approval mode.
+export const requireOmpApprovalSupport = Effect.fn("OmpRpc.requireApprovalSupport")(
+  function* (binary: string, env: NodeJS.ProcessEnv, cwd: string | undefined) {
+    const command = yield* resolveSpawnCommand(binary, ["--help"], { env });
+    const help = yield* spawnAndCollect(
+      binary,
+      ChildProcess.make(command.command, command.args, {
+        ...(cwd === undefined ? {} : { cwd }),
+        env,
+        extendEnv: false,
+        shell: command.shell,
+      }),
+    );
+    if (
+      help.code !== 0 ||
+      !help.stdout.includes("--approval-mode") ||
+      !help.stdout.includes("always-ask") ||
+      !help.stdout.includes("--no-tools") ||
+      !help.stdout.includes("--no-extensions") ||
+      !help.stdout.includes("--config") ||
+      !help.stdout.includes("rpc-ui")
+    ) {
+      return yield* new PiRpcError({
+        operation: "launch",
+        detail:
+          "OMP must support --mode rpc-ui and native --approval-mode. Update the configured OMP executable.",
+      });
+    }
+  },
+  Effect.scoped,
+  Effect.timeout("10 seconds"),
+);
 
 export interface PiRpcConnection {
   readonly send: (record: PiRpcRecord) => Effect.Effect<void, PiRpcError>;

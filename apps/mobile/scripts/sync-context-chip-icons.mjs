@@ -99,16 +99,17 @@ function bundledPath(viewBox) {
   if (!path) throw new Error(`Could not read the ${viewBox} logo from ProviderIcon.tsx`);
   return path;
 }
-const packageClients = await Promise.all(
+const packageClientGroups = await Promise.all(
   ["cursor", "fx", "grok", "kiro", "muse", "opencode", "pi"].map(async (name) => {
     const module = await import(
       NodeURL.pathToFileURL(
         NodePath.join(repositoryRoot, `packages/provider-${name}/src/client.ts`),
       ).href
     );
-    const client = Object.values(module).find((value) => value?.icon && value?.driverKind);
-    if (!client) throw new Error(`packages/provider-${name} exports no client with an icon`);
-    return client;
+    const clients = Object.values(module).filter((value) => value?.icon && value?.driverKind);
+    if (!clients.length)
+      throw new Error(`packages/provider-${name} exports no client with an icon`);
+    return clients;
   }),
 );
 const providerSvg = (viewBox, paths) =>
@@ -134,7 +135,7 @@ const providerLogos = [
     accent: "#D97757",
     svg: providerSvg("0 0 256 257", [{ d: bundledPath("0 0 256 257"), fill: "#D97757" }]),
   },
-  ...packageClients.map(({ driverKind, icon }) => {
+  ...packageClientGroups.flat().map(({ driverKind, icon }) => {
     const tintsIcon = icon.fill.light !== icon.fill.dark;
     return {
       driverKind,

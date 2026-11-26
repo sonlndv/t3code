@@ -5,6 +5,7 @@ import { assert, it } from "@effect/vitest";
 import {
   DEFAULT_MAX_TERMINAL_BUFFER_BYTES,
   DEFAULT_TERMINAL_ID,
+  NATIVE_OMP_TERMINAL_ID,
   ProjectId,
   ThreadId,
   TerminalCwdNotFoundError,
@@ -241,6 +242,9 @@ const historyLogPath = (logsDir: string, threadId = "thread-1") =>
   );
 
 interface CreateManagerOptions {
+  resolveNativeOmpLaunch?: NonNullable<
+    Parameters<typeof TerminalManager.makeWithOptions>[0]["resolveNativeOmpLaunch"]
+  >;
   shellResolver?: () => string;
   env?: NodeJS.ProcessEnv;
   subprocessInspector?: (terminalPid: number) => Effect.Effect<{
@@ -295,6 +299,9 @@ const createManager = (
         logsDir,
         historyLineLimit,
         ptyAdapter,
+        ...(options.resolveNativeOmpLaunch && {
+          resolveNativeOmpLaunch: options.resolveNativeOmpLaunch,
+        }),
         ...(options.historyByteLimit !== undefined
           ? { historyByteLimit: options.historyByteLimit }
           : {}),
@@ -689,6 +696,92 @@ it.layer(
       assert.equal(second.threadId, "thread-1");
       assert.equal(third.threadId, "thread-1");
       expect(ptyAdapter.spawnInputs).toHaveLength(1);
+    }),
+  );
+
+  it.effect("opens native OMP only in its own PTY and leaves a stopped TUI stopped on attach", () =>
+    Effect.gen(function* () {
+      const nativeOmpThreadId = ThreadId.make("thread-1");
+      const target = { threadId: nativeOmpThreadId, terminalId: NATIVE_OMP_TERMINAL_ID };
+      const input = openInput({ ...target, nativeOmpThreadId, cwd: "/not-the-saved-workspace" });
+      const { manager, ptyAdapter } = yield* createManager(5, {
+        env: { T3CODE_TERMINAL_SHELL: "/custom/shell" },
+        resolveNativeOmpLaunch: (id) =>
+          Effect.succeed({
+            cwd: process.cwd(),
+            command: { shell: process.execPath, args: ["thread", "native", "--", id] },
+          }),
+      });
+      for (const override of [
+        { threadId: "unrelated" },
+        { terminalId: DEFAULT_TERMINAL_ID },
+        { env: { NODE_OPTIONS: "--inspect" } },
+        { providerInstanceId: ProviderInstanceId.make("claude") },
+        { stopOnSettle: true },
+      ]) {
+        expect((yield* manager.open({ ...input, ...override }).pipe(Effect.flip))._tag).toBe(
+          "NativeOmpTerminalError",
+        );
+      }
+      expect((yield* manager.open(openInput(target)).pipe(Effect.flip))._tag).toBe(
+        "NativeOmpTerminalError",
+      );
+      const exited = yield* Deferred.make<void>();
+      const detach = yield* manager.attachStream(input, (event) =>
+        event.type === "exited"
+          ? Deferred.succeed(exited, undefined).pipe(Effect.asVoid)
+          : Effect.void,
+      );
+      yield* manager.open(input);
+      expect(ptyAdapter.spawnInputs.map(({ shell, args, cwd }) => ({ shell, args, cwd }))).toEqual([
+        {
+          shell: process.execPath,
+          args: ["thread", "native", "--", nativeOmpThreadId],
+          cwd: process.cwd(),
+        },
+      ]);
+      yield* manager.write({ ...target, data: "q" });
+      expect(ptyAdapter.processes[0]!.writes).toEqual(["q"]);
+      expect(yield* manager.hasActiveSubprocess(target)).toBe(true);
+      yield* manager.closeOnSettle(target);
+      expect(
+        (yield* manager.close({ threadId: nativeOmpThreadId }, false).pipe(Effect.flip))._tag,
+      ).toBe("NativeOmpTerminalError");
+      expect(ptyAdapter.processes[0]!.killed).toBe(false);
+      const metadata: string[] = [];
+      const stop = yield* manager.subscribeMetadata(
+        (event) =>
+          Effect.sync(() => {
+            if (event.type === "snapshot") {
+              metadata.push(...event.terminals.map((item) => item.terminalId));
+            } else {
+              metadata.push(event.type);
+            }
+          }),
+        false,
+      );
+      ptyAdapter.processes[0]!.emitData("OMP closed");
+      ptyAdapter.processes[0]!.emitExit({ exitCode: 0, signal: 0 });
+      yield* Deferred.await(exited);
+      detach();
+      const replay: TerminalAttachStreamEvent[] = [];
+      (yield* manager.attachStream({ ...input, restartIfNotRunning: true }, (event) =>
+        Effect.sync(() => {
+          replay.push(event);
+        }),
+      ))();
+      expect(replay[0]).toMatchObject({
+        type: "snapshot",
+        snapshot: { status: "exited", history: "OMP closed" },
+      });
+      expect(ptyAdapter.spawnInputs).toHaveLength(1);
+      yield* manager.close(target);
+      (yield* manager.attachStream({ ...input, resume: true }, () => Effect.void))();
+      expect(ptyAdapter.spawnInputs).toHaveLength(1);
+      expect(metadata).toEqual([]);
+      stop();
+      yield* manager.open(input);
+      expect(ptyAdapter.spawnInputs).toHaveLength(2);
     }),
   );
 

@@ -177,6 +177,34 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
     }),
   );
 
+  it.effect("targets the running native terminal host's dev database, not adjacent userdata", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-native-dev-" });
+      const flags = {
+        ...minimalWebFlags(baseDir),
+        cwd: Option.some(baseDir),
+        devUrl: Option.some(new URL("http://localhost:5733")),
+      };
+      for (const useDevStateDirectory of [true, false]) {
+        const config = yield* resolveServerConfig(flags, Option.none(), {
+          useDevStateDirectory,
+        }).pipe(
+          Effect.provide(
+            Layer.merge(
+              NetService.layer,
+              ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })),
+            ),
+          ),
+        );
+        expect(config.dbPath).toBe(
+          path.join(baseDir, useDevStateDirectory ? "dev" : "userdata", "statev2.sqlite"),
+        );
+      }
+    }),
+  );
+
   const acquireOwnership = (baseDir: string) =>
     acquireServerOwnership(NodePath.join(baseDir, "userdata", "server-runtime.json")).pipe(
       Effect.provide(Layer.merge(ProcessRunner.layer, NodeCrypto.layer)),

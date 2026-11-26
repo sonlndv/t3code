@@ -10,6 +10,7 @@ export const PROVIDER_ORDER: readonly UsageProviderKind[] = [
   "opencode",
   "antigravity",
   "pi",
+  "omp",
   "muse",
 ];
 
@@ -26,6 +27,7 @@ export const PROVIDER_LABEL: Record<UsageProviderKind, string> = {
   opencode: "OpenCode",
   antigravity: "Antigravity",
   pi: "Pi",
+  omp: "OMP",
   muse: "Muse Code",
 };
 

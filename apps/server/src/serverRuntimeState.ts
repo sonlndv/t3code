@@ -1,3 +1,5 @@
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- The CLI and server hash their startup paths without persisting the environment.
+import * as NodeCrypto from "node:crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -6,6 +8,7 @@ import * as Schema from "effect/Schema";
 
 import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
 import { formatHostForUrl, isWildcardHost } from "@t3tools/shared/hostClassification";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import packageJson from "../package.json" with { type: "json" };
 import type * as ServerConfig from "./config.ts";
 
@@ -22,6 +25,7 @@ export const PersistedServerRuntimeState = Schema.Struct({
   startedAt: Schema.String,
   serviceManaged: Schema.optional(Schema.Boolean),
   serverVersion: Schema.optional(Schema.String),
+  ompEnvironmentFingerprint: Schema.optional(Schema.String),
   // The managed policy this server loaded at startup, null for none; absent from older servers.
   managedPolicy: Schema.optional(
     Schema.NullOr(
@@ -61,6 +65,29 @@ const runtimeOriginForConfig = (
   return `http://${hostname}:${port}`;
 };
 
+// OMP finds its profile and session ownership locks from these paths. A terminal
+// in a different namespace must not claim a session that the server still owns.
+export function ompEnvironmentFingerprint(
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform,
+): string {
+  // Windows passes the first sorted spelling when the environment has duplicate keys.
+  const windowsKeys = platform === "win32" ? Object.keys(env).sort() : undefined;
+  const paths = [
+    "HOME",
+    "USERPROFILE",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "PI_CONFIG_DIR",
+    "PI_CODING_AGENT_DIR",
+    "OMP_PROFILE",
+    "PI_PROFILE",
+    "XDG_STATE_HOME",
+    "PI_TEST_SESSION_OWNERS_DIR",
+  ].map((key) => env[windowsKeys?.find((name) => name.toUpperCase() === key) ?? key]);
+  return NodeCrypto.createHash("sha256").update(JSON.stringify(paths)).digest("hex");
+}
+
 export const makePersistedServerRuntimeState = (input: {
   readonly config: Pick<
     ServerConfig.ServerConfig["Service"],
@@ -70,19 +97,23 @@ export const makePersistedServerRuntimeState = (input: {
   readonly serviceManaged?: boolean;
   readonly managedPolicy?: PersistedServerRuntimeState["managedPolicy"];
 }): Effect.Effect<PersistedServerRuntimeState> =>
-  Effect.map(DateTime.now, (now) => ({
-    version: 1,
-    pid: process.pid,
-    ...(input.config.host ? { host: input.config.host } : {}),
-    ...(input.config.privateNetworkOnly ? { privateNetworkOnly: true } : {}),
-    port: input.port,
-    origin: runtimeOriginForConfig(input.config, input.port),
-    ...(input.config.devUrl ? { devUrl: input.config.devUrl.toString() } : {}),
-    startedAt: DateTime.formatIso(now),
-    ...(input.serviceManaged ? { serviceManaged: true } : {}),
-    serverVersion: packageJson.version,
-    ...(input.managedPolicy === undefined ? {} : { managedPolicy: input.managedPolicy }),
-  }));
+  Effect.map(
+    Effect.all([DateTime.now, HostProcess.Environment, HostProcess.Platform]),
+    ([now, env, platform]) => ({
+      version: 1,
+      pid: process.pid,
+      ...(input.config.host ? { host: input.config.host } : {}),
+      ...(input.config.privateNetworkOnly ? { privateNetworkOnly: true } : {}),
+      port: input.port,
+      origin: runtimeOriginForConfig(input.config, input.port),
+      ...(input.config.devUrl ? { devUrl: input.config.devUrl.toString() } : {}),
+      startedAt: DateTime.formatIso(now),
+      ...(input.serviceManaged ? { serviceManaged: true } : {}),
+      serverVersion: packageJson.version,
+      ompEnvironmentFingerprint: ompEnvironmentFingerprint(env, platform),
+      ...(input.managedPolicy === undefined ? {} : { managedPolicy: input.managedPolicy }),
+    }),
+  );
 
 export const persistServerRuntimeState = (input: {
   readonly path: string;

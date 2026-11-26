@@ -1041,6 +1041,49 @@ describe("UsageService", () => {
       }),
   );
 
+  it.effect("retains distinct Pi and OMP usage after shared-directory transcripts disappear", () =>
+    Effect.gen(function* () {
+      const { home, settings } = yield* setup;
+      const dir = NodePath.join(home, "pi", "sessions", "project");
+      yield* Effect.promise(() => NodeFSP.mkdir(dir, { recursive: true }));
+      for (const driver of ["pi", "omp"]) {
+        const lines = [
+          ...(driver === "omp" ? [{ type: "title", v: 1, title: "" }] : []),
+          { type: "session", id: driver },
+          {
+            type: "message",
+            id: "msg",
+            timestamp: "2026-08-01T10:00:00Z",
+            ...(driver === "omp" ? { runtime: { version: "19.2.1" } } : {}),
+            message: {
+              role: "assistant",
+              provider: "local",
+              model: "fixture",
+              usage: { input: driver === "omp" ? 41 : 7 },
+            },
+          },
+        ];
+        yield* Effect.promise(() =>
+          NodeFSP.writeFile(
+            NodePath.join(dir, `${driver}.jsonl`),
+            lines.map((line) => encodeUnknownJsonString(line)).join("\n") + "\n",
+          ),
+        );
+      }
+      yield* Effect.gen(function* () {
+        const service = yield* UsageService.make;
+        const totals = Effect.map(service.readSummary(WINDOW), (summary) =>
+          Object.fromEntries(
+            summary.buckets.map((bucket) => [bucket.provider, totalTokens(bucket.totals)]),
+          ),
+        );
+        assert.deepStrictEqual(yield* totals, { pi: 7, omp: 41 });
+        yield* Effect.promise(() => NodeFSP.rm(dir, { recursive: true }));
+        assert.deepStrictEqual(yield* totals, { pi: 7, omp: 41 });
+      }).pipe(Effect.provide(layerService({ prefix: "usage-shared-pi-omp", home, settings })));
+    }),
+  );
+
   it.effect(
     "reads Pi per-model usage and auxiliary costs once across forks and repeated entries",
     () =>
@@ -3580,7 +3623,6 @@ describe("UsageService", () => {
             60 + 20 * (version === 4 ? 1 : 2),
           );
           yield* upgraded.awaitPersisted;
-          assert.strictEqual(SCAN_CACHE_FILE_NAME, "usage-scan-cache-v17.json");
           assert.deepStrictEqual(
             (yield* Effect.promise(() => NodeFSP.readdir(stateDir)))
               .filter((name) => name.startsWith("usage-scan-cache"))

@@ -14,6 +14,8 @@ import {
   type EnvironmentId,
   type ClientGuardedRpcTag,
   ORCHESTRATION_V2_WS_METHODS,
+  NATIVE_OMP_TERMINAL_ID,
+  NativeOmpTerminalError,
   WS_METHODS,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -479,7 +481,7 @@ function subscribeDynamicMapped<TTag extends EnvironmentSubscriptionRpcTag, A>(
   );
 }
 
-export function subscribeDynamic<TTag extends EnvironmentSubscriptionRpcTag>(
+function subscribeDynamic<TTag extends EnvironmentSubscriptionRpcTag>(
   tag: TTag,
   makeInput: (session: RpcSession) => Effect.Effect<EnvironmentRpcInput<TTag>>,
   options?: SubscriptionOptions<TTag>,
@@ -542,6 +544,44 @@ export function subscribe<TTag extends EnvironmentSubscriptionRpcTag>(
 > {
   return subscribeDynamic(tag, () => Effect.succeed(input), options);
 }
+
+const requireNativeOmpTerminal = Effect.fn("EnvironmentRpc.requireNativeOmpTerminal")(function* (
+  session: RpcSession,
+) {
+  const config = yield* session.initialConfig.pipe(
+    Effect.mapError(
+      () => new NativeOmpTerminalError({ detail: "Cannot verify native OMP support." }),
+    ),
+  );
+  if (config.featureFlags?.nativeOmpTerminal !== true) {
+    return yield* new NativeOmpTerminalError({
+      detail: "This server does not support native OMP terminals.",
+    });
+  }
+});
+
+export const openTerminal = Effect.fn("EnvironmentRpc.openTerminal")(function* (
+  input: EnvironmentRpcInput<typeof WS_METHODS.terminalOpen>,
+) {
+  const session = yield* currentSession();
+  if (input.terminalId === NATIVE_OMP_TERMINAL_ID || input.nativeOmpThreadId !== undefined) {
+    yield* requireNativeOmpTerminal(session);
+  }
+  return yield* requestInSession(session, WS_METHODS.terminalOpen, input);
+});
+
+/** Recheck on every transport replacement: an older server drops unknown launch fields. */
+export const subscribeTerminal = (
+  makeInput: () => EnvironmentRpcInput<typeof WS_METHODS.terminalAttach>,
+) =>
+  subscribeDynamicMapped(
+    WS_METHODS.terminalAttach,
+    () => Effect.sync(makeInput),
+    (session, input, stream) =>
+      input.terminalId !== NATIVE_OMP_TERMINAL_ID && input.nativeOmpThreadId === undefined
+        ? stream
+        : Stream.unwrap(requireNativeOmpTerminal(session).pipe(Effect.as(stream))),
+  );
 
 export const subscribeVcsBranch = (
   input: EnvironmentRpcInput<typeof WS_METHODS.subscribeVcsBranch>,

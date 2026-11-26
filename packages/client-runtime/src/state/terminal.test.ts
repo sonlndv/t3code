@@ -1,5 +1,6 @@
 import {
   EnvironmentId,
+  NATIVE_OMP_TERMINAL_ID,
   ThreadId,
   type TerminalOpenInput,
   type TerminalResizeInput,
@@ -76,6 +77,7 @@ type CommandInput =
 
 function setup(
   options: {
+    readonly terminalId?: string;
     readonly initialInput?: string;
     readonly beforeCommand?: (name: string, input: CommandInput) => Promise<void>;
     readonly resizeFailure?: () => boolean;
@@ -139,7 +141,7 @@ function setup(
       close: command("close"),
     },
     {
-      target: { environmentId, threadId, terminalId: "term-1" },
+      target: { environmentId, threadId, terminalId: options.terminalId ?? "term-1" },
       gridSize: { cols: 120, rows: 40 },
       initialInput: options.initialInput,
       canOperate: () => access.canOperate,
@@ -149,7 +151,13 @@ function setup(
   );
   const attached: TerminalSessionMode = {
     kind: "attached",
-    input: { threadId, terminalId: "term-1", cwd: "/repo", cols: 80, rows: 24 },
+    input: {
+      threadId,
+      terminalId: options.terminalId ?? "term-1",
+      cwd: "/repo",
+      cols: 80,
+      rows: 24,
+    },
   };
   const snapshot = (state: Partial<TerminalBufferState> & { readonly generation?: number }) => {
     const { generation = 1, ...rest } = state;
@@ -362,6 +370,17 @@ it("closes and reports a shell that exits while attached", () => {
   expect(of("open")).toEqual([]);
   expect(exits).toHaveLength(1);
   expect(live).toEqual([true, false]);
+});
+
+it("keeps native OMP exit diagnostics visible without restarting on a later attach", () => {
+  const { attached, emit, mount, of, exits } = setup({ terminalId: NATIVE_OMP_TERMINAL_ID });
+  mount(attached);
+  emit({ status: "exited", version: 1 });
+  emit({ status: "running", version: 2 });
+  emit({ status: "exited", version: 3 });
+  expect(of("open")).toEqual([]);
+  expect(of("close")).toEqual([]);
+  expect(exits).toEqual([]);
 });
 
 it("does not reopen an ended shell after a viewer is granted operate", () => {

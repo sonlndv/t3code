@@ -1,5 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import { spawnAndCollect } from "@t3tools/provider-core/server/snapshotProbe";
+import * as NodeURL from "node:url";
 import {
   CheckpointId,
   ChatAttachmentId,
@@ -56,6 +58,7 @@ import {
   type PiAdapterV2Options,
 } from "./adapter.ts";
 import { makePiRpcConnection, type PiRpcRecord } from "./rpc.ts";
+import { OMP_FLAVOR } from "./flavor.ts";
 import { loadMcpBridge } from "./mcpBridge.testkit.ts";
 import { PI_T3_SERVICE_TIER_COMMAND } from "./mcpExtensionSource.ts";
 import { turnItemOutputText } from "../../../client-runtime/src/work-log/itemDetail.ts";
@@ -333,6 +336,8 @@ const makeFakePi: Effect.Effect<FakePi> = Effect.gen(function* () {
         return promptDisposition && isStreaming
           ? { ...base, data: { disposition: "queued" } }
           : base;
+      case "set_subagent_subscription":
+        return { ...base, data: { level: record["level"] } };
       case "get_available_models":
         return { ...base, data: { models } };
       case "new_session": {
@@ -578,6 +583,12 @@ const openRuntime = Effect.fnUntraced(function* (
     runtimePolicy,
     ...(initialNativeThreadId === undefined ? {} : { initialNativeThreadId }),
   });
+  return yield* observeRuntime(runtime);
+});
+
+const observeRuntime = Effect.fnUntraced(function* (
+  runtime: ProviderAdapter.ProviderAdapterV2SessionRuntime,
+) {
   const emitted = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
   yield* runtime.events.pipe(
     Stream.runForEach((event) => Queue.offer(emitted, event)),
@@ -652,6 +663,461 @@ const startTurn = Effect.fnUntraced(function* (
     modelSelection: selection ?? modelSelection(model),
     runtimePolicy,
   });
+});
+
+const ompTestSelection = { model: "default", instanceId: ProviderInstanceId.make("omp-test") };
+
+const openOmpTestSession = Effect.fnUntraced(function* (
+  fake: FakePi,
+  options: { readonly help?: string; readonly resumeFile?: string; readonly lease?: string } = {},
+) {
+  const spawner = ChildProcessSpawner.make((command) =>
+    fake.spawner.spawn(command).pipe(
+      Effect.map((child) =>
+        ChildProcess.isStandardCommand(command) &&
+        (command.args.includes("--help") || command.args.includes("lease"))
+          ? ChildProcessSpawner.makeHandle({
+              ...child,
+              stdout: Stream.make(
+                new TextEncoder().encode(
+                  command.args.includes("lease")
+                    ? (options.lease ?? '{"held":[],"unknown":[]}')
+                    : (options.help ??
+                        "--mode rpc-ui --approval-mode=always-ask --config --no-tools --no-extensions"),
+                ),
+              ),
+              exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(0)),
+            })
+          : child,
+      ),
+    ),
+  );
+  const adapter = yield* makePiAdapterV2({
+    flavor: OMP_FLAVOR,
+    instanceId: ompTestSelection.instanceId,
+    settings: { enabled: true, binaryPath: "omp", launchArgs: "", customModels: [] },
+    environment: {},
+  }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner));
+  return yield* adapter.openSession({
+    threadId: THREAD_ID,
+    providerSessionId: SESSION_ID,
+    modelSelection: ompTestSelection,
+    runtimePolicy: { ...runtimePolicy, runtimeMode: "approval-required" },
+    ...(options.resumeFile === undefined ? {} : { initialNativeThreadId: options.resumeFile }),
+  });
+});
+
+const ompSessionFixture = Effect.fnUntraced(function* (cwd: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const file = `${yield* fs.makeTempDirectoryScoped()}/saved.jsonl`;
+  yield* fs.writeFileString(
+    file,
+    `${encodeJsonLine({ type: "title", v: 1, title: "Saved", pad: " ".repeat(128) })}\n` +
+      `${encodeJsonLine({ type: "session", id: "saved", cwd })}\n`,
+  );
+  return file;
+});
+
+describe("OMP native RPC", () => {
+  it.effect(
+    "rejects an executable without native approval support before launching a session",
+    () =>
+      Effect.gen(function* () {
+        const fake = yield* makeFakePi;
+        const error = yield* openOmpTestSession(fake, { help: "--mode rpc" }).pipe(Effect.flip);
+        assert.equal(error._tag, "ProviderAdapterOpenSessionError");
+        assert.deepEqual(fake.lastSpawn().args, ["--help"]);
+      }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+
+  it.effect("never opens a session from a different workspace, or one missing its header", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const file = yield* ompSessionFixture(yield* fs.makeTempDirectoryScoped());
+      const fake = yield* makeFakePi;
+      for (const resumeFile of [file, `${file}.missing`]) {
+        const error = yield* openOmpTestSession(fake, { resumeFile }).pipe(Effect.flip);
+        assert.isTrue(isProviderProtocolError(error));
+        assert.deepEqual(fake.lastSpawn().args, ["--help"]);
+      }
+    }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+
+  it.effect("refuses held, indeterminate, or unsupported leases before starting RPC", () =>
+    Effect.gen(function* () {
+      const file = yield* ompSessionFixture((yield* ProviderHost.ProviderHost).paths.cwd);
+      for (const lease of [
+        '{"held":["saved"],"unknown":[]}',
+        '{"held":[],"unknown":["saved"]}',
+        "{}",
+      ]) {
+        const fake = yield* makeFakePi;
+        const error = yield* openOmpTestSession(fake, { resumeFile: file, lease }).pipe(
+          Effect.flip,
+        );
+        assert.isTrue(isProviderProtocolError(error));
+        assert.deepEqual(fake.lastSpawn().args, ["session", "lease", "--json", "--", "saved"]);
+      }
+    }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+
+  it.effect("never switches back from a continuation or accepts a replaced file", () =>
+    Effect.gen(function* () {
+      const file = yield* ompSessionFixture((yield* ProviderHost.ProviderHost).paths.cwd);
+      for (const [sessionFile, sessionId] of [
+        [`${file}.continued`, "continued"],
+        [file, "replacement"],
+      ] as const) {
+        const fake = yield* makeFakePi;
+        const runtime = yield* openOmpTestSession(fake, { resumeFile: file });
+        fake.queueState({ sessionFile, sessionId, isSettled: true });
+        yield* runtime
+          .ensureThread({ threadId: THREAD_ID, modelSelection: ompTestSelection, runtimePolicy })
+          .pipe(Effect.flip);
+        assert.isFalse(
+          fake
+            .allRequests()
+            .some((r) => ["switch_session", "new_session", "prompt"].includes(String(r["type"]))),
+        );
+      }
+    }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+
+  it.effect("the child refuses a lost claim even after the preflight reported free", () =>
+    Effect.gen(function* () {
+      const file = yield* ompSessionFixture((yield* ProviderHost.ProviderHost).paths.cwd);
+      const fake = yield* makeFakePi;
+      yield* openOmpTestSession(fake, { resumeFile: file });
+      const args = fake.lastSpawn().args;
+      const guard = NodeURL.pathToFileURL(args[args.indexOf("--extension") + 1]!).href;
+      // Run the emitted module in a child: a refused session must exit, not merely
+      // throw a handler error that OMP catches and ignores.
+      const script = `
+        const [guard, file, owner] = process.argv.slice(1);
+        let start;
+        const storage = class {
+          claimSession() { return owner === "elsewhere" ? null : () => {}; }
+          isSessionOwnedElsewhere() { return false; }
+        };
+        (await import(guard)).default({
+          pi: { FileSessionStorage: storage, parseSessionFileName: () => undefined,
+            isSessionLeaseHeld: () => owner !== "unavailable" },
+          on: (_, handler) => { start = handler; },
+          registerFlag() {},
+        });
+        start({}, { agent: { kind: "main" }, sessionManager: {
+          getSessionFile: () => file, getSessionId: () => "saved", isOwnedElsewhere: () => false,
+          onPersistenceNotice() {},
+        } });
+        console.log("ready");
+      `;
+      for (const owner of ["free", "elsewhere", "unavailable"]) {
+        const child = yield* spawnAndCollect(
+          process.execPath,
+          ChildProcess.make(
+            process.execPath,
+            ["--input-type=module", "-e", script, "--", guard, file, owner, "--t3-exact-resume"],
+            { env: {}, extendEnv: false },
+          ),
+        );
+        assert.equal(child.code, owner === "free" ? 0 : 1, child.stderr);
+        assert.equal(child.stdout.trim(), owner === "free" ? "ready" : "");
+        if (owner !== "free") assert.include(child.stderr, "ownership");
+      }
+    }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+
+  it.effect("withdraws pending work on Stop and resumes the exact saved file", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi;
+      const file = yield* ompSessionFixture((yield* ProviderHost.ProviderHost).paths.cwd);
+      fake.reloadExtensions(file);
+      const runtime = yield* openOmpTestSession(fake);
+      const { takeEvent } = yield* observeRuntime(runtime);
+      fake.queueState({ isSettled: true });
+      const thread = yield* runtime.ensureThread({
+        threadId: THREAD_ID,
+        modelSelection: ompTestSelection,
+        runtimePolicy,
+      });
+      yield* startTurn(runtime, thread, "default", [], "Hello", ompTestSelection);
+      const running = yield* takeEvent(
+        (event) =>
+          event.type === "provider_turn.updated" && event.providerTurn.status === "running",
+      );
+      if (running.type !== "provider_turn.updated") throw new Error("Expected a running turn");
+      yield* runtime.interruptTurn({
+        providerThread: thread,
+        providerTurnId: running.providerTurn.id,
+      });
+      assert.isTrue(
+        fake.allRequests().some((record) => record["type"] === "abort_and_restore_queue"),
+      );
+      const next = yield* makeFakePi;
+      next.reloadExtensions(file);
+      const resumed = yield* openOmpTestSession(next, { resumeFile: file });
+      next.queueState({ isSettled: true, sessionId: "saved" });
+      const restored = yield* resumed.resumeThread({ providerThread: thread });
+      assert.equal(restored.nativeThreadRef?.nativeId, file);
+      assert.includeMembers([...next.lastSpawn().args], ["--resume", file]);
+      assert.include(next.lastSpawn().args, "--t3-exact-resume");
+      assert.isFalse(next.allRequests().some((record) => record["type"] === "new_session"));
+    }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+
+  it.effect("keeps native OMP workers and their late results on the spawning turn", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi;
+      const runtime = yield* openOmpTestSession(fake);
+      const { takeEvent } = yield* observeRuntime(runtime);
+      fake.queueState({ isSettled: true });
+      const thread = yield* runtime.ensureThread({
+        threadId: THREAD_ID,
+        modelSelection: ompTestSelection,
+        runtimePolicy,
+      });
+      yield* startTurn(runtime, thread, "default", [], "Start two workers", ompTestSelection);
+      yield* fake.takeRequest("prompt");
+      yield* fake.emit({ type: "agent_start" });
+      // OMP 19.2.1: the lifecycle id moves under progress.id, not payload.id.
+      const payload = (id: string) => ({
+        id,
+        index: id === "Alpha" ? 0 : 1,
+        agent: "task",
+        agentSource: "bundled",
+        parentToolCallId: "call-8",
+        detached: true,
+      });
+      const lifecycle = (id: string, status: string) =>
+        fake.emit({ type: "subagent_lifecycle", payload: { ...payload(id), status } });
+      const progress = (id: string, status: string, recentOutput: string[]) => {
+        const { id: workerId, ...owner } = payload(id);
+        return fake.emit({
+          type: "subagent_progress",
+          payload: {
+            ...owner,
+            assignment: `Report ${id}`,
+            progress: {
+              id: workerId,
+              status,
+              recentOutput,
+              resolvedModel: "fixture/worker",
+            },
+          },
+        });
+      };
+      yield* lifecycle("Alpha", "started");
+      yield* lifecycle("Beta", "started");
+      yield* progress("Alpha", "running", ["inspecting"]);
+      const running = yield* takeEvent(
+        (event) => event.type === "subagent.updated" && event.subagent.progress === "inspecting",
+      );
+      if (running.type !== "subagent.updated") throw new Error("Expected worker progress");
+      assert.equal(running.subagent.nativeTaskRef?.nativeId, "Alpha");
+      assert.equal(running.subagent.prompt, "Report Alpha");
+      assert.equal(running.subagent.model, "fixture/worker");
+      fake.queueState({ isSettled: true, hasPendingAsyncWork: true });
+      yield* fake.emit({ type: "session_settled" });
+      yield* takeEvent((event) => event.type === "turn.terminal");
+      yield* startTurn(runtime, thread, "default", [], "New parent turn", ompTestSelection, 2);
+      yield* fake.takeRequest("prompt");
+      yield* fake.emit({ type: "agent_start" });
+      yield* progress("Beta", "completed", ["last", "first"]);
+      yield* lifecycle("Beta", "completed");
+      const finished = yield* takeEvent(
+        (event) =>
+          event.type === "turn_item.updated" &&
+          event.turnItem.type === "subagent" &&
+          event.turnItem.status === "completed",
+      );
+      if (finished.type !== "turn_item.updated" || finished.turnItem.type !== "subagent")
+        throw new Error("Expected a completed worker card");
+      assert.equal(finished.turnItem.result, "first\nlast");
+      assert.equal(finished.turnItem.runId, running.subagent.runId);
+      assert.notEqual(finished.turnItem.subagentId, running.subagent.id);
+      yield* fake.closeStdout;
+      const lost = yield* takeEvent(
+        (event) => event.type === "subagent.updated" && event.subagent.status === "failed",
+      );
+      if (lost.type !== "subagent.updated") throw new Error("Expected a failed worker");
+      assert.equal(lost.subagent.id, running.subagent.id);
+      assert.equal(lost.subagent.runId, running.subagent.runId);
+      const drained = yield* takeEvent((event) => event.type === "background_work.updated");
+      assert.isTrue(drained.type === "background_work.updated" && !drained.pending);
+      assert.isFalse(yield* runtime.hasPendingBackgroundWork!);
+    }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+
+  it.effect("replaces the native worker preview with its own bounded task result", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi;
+      const runtime = yield* openOmpTestSession(fake);
+      const { takeEvent } = yield* observeRuntime(runtime);
+      fake.queueState({ isSettled: true });
+      const thread = yield* runtime.ensureThread({
+        threadId: THREAD_ID,
+        modelSelection: ompTestSelection,
+        runtimePolicy,
+      });
+      yield* startTurn(runtime, thread, "default", [], "Run the batch", ompTestSelection);
+      yield* fake.takeRequest("prompt");
+      yield* fake.emit({ type: "agent_start" });
+      const owner = { parentToolCallId: "call-8", agent: "task", agentSource: "bundled", index: 1 };
+      yield* fake.emit({
+        type: "subagent_lifecycle",
+        payload: { ...owner, id: "Beta", status: "started" },
+      });
+      yield* fake.emit({
+        type: "subagent_progress",
+        payload: {
+          ...owner,
+          task: "Report Beta",
+          progress: {
+            id: "Beta",
+            recentOutput: ["tail"],
+            status: "completed",
+          },
+        },
+      });
+      yield* fake.emit({
+        type: "subagent_lifecycle",
+        payload: { ...owner, id: "Beta", status: "completed", description: "assignment label" },
+      });
+      const preview = yield* takeEvent(
+        (event) => event.type === "subagent.updated" && event.subagent.status === "completed",
+      );
+      if (preview.type !== "subagent.updated") throw new Error("Expected a terminal worker");
+      assert.equal(preview.subagent.result, "tail");
+      yield* fake.emit({
+        type: "tool_execution_end",
+        toolCallId: "call-8",
+        toolName: "task",
+        isError: false,
+        result: {
+          details: {
+            results: [
+              {
+                id: "Alpha",
+                agent: "task",
+                task: "Report Alpha",
+                exitCode: 1,
+                error: "worker failed",
+              },
+              {
+                id: "Beta",
+                agent: "task",
+                task: "Report Beta",
+                exitCode: 0,
+                output: "B".repeat(11_000),
+              },
+            ],
+          },
+        },
+      });
+      const alpha = yield* takeEvent(
+        (event) =>
+          event.type === "subagent.updated" && event.subagent.nativeTaskRef?.nativeId === "Alpha",
+      );
+      if (alpha.type !== "subagent.updated") throw new Error("Expected Alpha's result");
+      assert.equal(alpha.subagent.result, "worker failed");
+      assert.equal(alpha.subagent.status, "failed");
+      const beta = yield* takeEvent(
+        (event) =>
+          event.type === "turn_item.updated" &&
+          event.turnItem.type === "subagent" &&
+          event.turnItem.subagentId === preview.subagent.id,
+      );
+      if (beta.type !== "turn_item.updated" || beta.turnItem.type !== "subagent")
+        throw new Error("Expected Beta's final card");
+      assert.equal(beta.turnItem.result, "B".repeat(10_000));
+      assert.isNull(beta.turnItem.childThreadId);
+    }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+
+  it.effect(
+    "preserves native identity and approval choices, and settles on OMP's terminal frame",
+    () =>
+      Effect.gen(function* () {
+        const fake = yield* makeFakePi;
+        const selection = ompTestSelection;
+        const runtime = yield* openOmpTestSession(fake);
+        const { takeEvent } = yield* observeRuntime(runtime);
+        fake.queueState({ isSettled: true, hasPendingAsyncWork: false });
+        const thread = yield* runtime.ensureThread({
+          threadId: THREAD_ID,
+          modelSelection: selection,
+          runtimePolicy,
+        });
+        assert.equal(thread.nativeThreadRef?.driver, OMP_FLAVOR.driverKind);
+        assert.equal(runtime.providerSession.capabilities.runtimePolicy.enforcement, "native");
+        assert.isFalse(runtime.providerSession.capabilities.threads.canRollbackThread);
+        yield* startTurn(runtime, thread, "default", [], "Hello", selection);
+        yield* fake.takeRequest("prompt");
+        yield* fake.emit({ type: "agent_start" });
+        yield* fake.emit({
+          type: "extension_ui_request",
+          method: "select",
+          id: "native-approval",
+          title: "Allow tool: write\npath: sample.txt",
+          options: ["Approve", "Deny"],
+        });
+        const approval = yield* takeEvent(
+          (event) =>
+            event.type === "turn_item.updated" && event.turnItem.type === "approval_request",
+        );
+        if (
+          approval.type !== "turn_item.updated" ||
+          approval.turnItem.type !== "approval_request"
+        ) {
+          throw new Error("Expected an approval card");
+        }
+        assert.deepEqual(approval.turnItem.options, [
+          { decision: "accept", label: "Approve" },
+          { decision: "decline", label: "Deny" },
+        ]);
+        assert.equal(approval.turnItem.requestKind, "file-change");
+        yield* runtime.respondToRuntimeRequest({
+          requestId: approval.turnItem.requestId,
+          decision: "decline",
+        });
+        assert.deepEqual(yield* fake.takeRequest("extension_ui_response"), {
+          type: "extension_ui_response",
+          id: "native-approval",
+          value: "Deny",
+        });
+        yield* fake.emit({
+          type: "extension_ui_request",
+          method: "form",
+          id: "form-1",
+          html: "<form></form>",
+        });
+        assert.deepEqual(yield* fake.takeRequest("extension_ui_response"), {
+          type: "extension_ui_response",
+          id: "form-1",
+          cancelled: true,
+        });
+        yield* fake.emit({
+          type: "tool_execution_start",
+          toolCallId: "call",
+          toolName: "write",
+          args: { path: "xd://mcp__t3_code_html_render", content: '{"title":"example"}' },
+        });
+        const tool = yield* takeEvent(
+          (event) => event.type === "turn_item.updated" && event.turnItem.type === "dynamic_tool",
+        );
+        if (tool.type !== "turn_item.updated" || tool.turnItem.type !== "dynamic_tool") {
+          throw new Error("Expected a T3 MCP tool card, not a workspace edit");
+        }
+        assert.equal(tool.turnItem.toolName, "mcp__t3-code__html_render");
+        assert.deepEqual(tool.turnItem.input, { title: "example" });
+        fake.queueState({ isSettled: true, hasPendingAsyncWork: false });
+        yield* fake.emit({ type: "session_settled" });
+        yield* takeEvent(
+          (event) =>
+            event.type === "provider_turn.updated" && event.providerTurn.status === "completed",
+        );
+      }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
 });
 
 describe("PiAdapterV2", () => {

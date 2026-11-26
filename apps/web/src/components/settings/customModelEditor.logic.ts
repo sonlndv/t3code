@@ -46,6 +46,20 @@ const EFFORT_CHOICES = [
   { id: "xhigh", label: msg("Extra High", { $context: "reasoning level" }) },
 ] as const;
 
+const PI_THINKING_PRESET: ReadonlyArray<DescriptorPreset> = [
+  {
+    id: "thinking",
+    label: msg("Thinking", { $context: "model option name" }),
+    type: "select",
+    choices: [
+      { id: "off", label: msg("Off", { $context: "reasoning level" }) },
+      { id: "minimal", label: msg("Minimal", { $context: "reasoning level" }) },
+      ...EFFORT_CHOICES,
+      { id: "max", label: msg("Max", { $context: "reasoning level" }) },
+    ],
+  },
+];
+
 export const DESCRIPTOR_PRESETS_BY_KIND: Partial<
   Record<ProviderDriverKind, ReadonlyArray<DescriptorPreset>>
 > = {
@@ -100,22 +114,8 @@ export const DESCRIPTOR_PRESETS_BY_KIND: Partial<
       choices: EFFORT_CHOICES,
     },
   ],
-  [ProviderDriverKind.make("pi")]: [
-    {
-      id: "thinking",
-      label: msg("Thinking", { $context: "model option name" }),
-      type: "select",
-      choices: [
-        { id: "off", label: msg("Off", { $context: "reasoning level" }) },
-        { id: "minimal", label: msg("Minimal", { $context: "reasoning level" }) },
-        { id: "low", label: msg("Low", { $context: "reasoning level" }) },
-        { id: "medium", label: msg("Medium", { $context: "reasoning level" }), isDefault: true },
-        { id: "high", label: msg("High", { $context: "reasoning level" }) },
-        { id: "xhigh", label: msg("Extra High", { $context: "reasoning level" }) },
-        { id: "max", label: msg("Max", { $context: "reasoning level" }) },
-      ],
-    },
-  ],
+  [ProviderDriverKind.make("pi")]: PI_THINKING_PRESET,
+  [ProviderDriverKind.make("omp")]: PI_THINKING_PRESET,
   [ProviderDriverKind.make("opencode")]: [
     {
       id: "variant",

@@ -10,15 +10,24 @@ import {
   AuthSettingsWriteScope,
   AuthSourceControlWriteScope,
   AuthTerminalOperateScope,
+  AuthTerminalReadScope,
   type AuthEnvironmentScope,
   mcpClientScopes,
 } from "./auth.ts";
 import { PeerLinkLinkPairingInput } from "./peerLink.ts";
 import { ORCHESTRATION_V2_WS_METHODS } from "./orchestrationV2.ts";
 import { WS_METHODS } from "./rpc.ts";
+import { NATIVE_OMP_TERMINAL_ID } from "./terminal.ts";
 
 /** Incremental client enforcement; the server still authorizes every request. */
 export const CLIENT_GUARDED_RPC_SCOPES = {
+  [WS_METHODS.terminalOpen]: AuthTerminalOperateScope,
+  [WS_METHODS.terminalAttach]: AuthTerminalOperateScope,
+  [WS_METHODS.terminalObserve]: AuthTerminalReadScope,
+  [WS_METHODS.terminalWrite]: AuthTerminalOperateScope,
+  [WS_METHODS.terminalResize]: AuthTerminalOperateScope,
+  [WS_METHODS.terminalClear]: AuthTerminalOperateScope,
+  [WS_METHODS.terminalClose]: AuthTerminalOperateScope,
   [WS_METHODS.providerAuthRemoveMethod]: AuthProvidersManageScope,
   // An MCP sign-in stores a credential for the agent, as an account sign-in does.
   [WS_METHODS.providerMcpSignInStart]: AuthProvidersManageScope,
@@ -114,6 +123,18 @@ export function clientRpcRequiredScopes(
   method: string,
   input: unknown,
 ): readonly AuthEnvironmentScope[] {
+  if (
+    method.startsWith("terminal.") &&
+    Object.hasOwn(CLIENT_GUARDED_RPC_SCOPES, method) &&
+    typeof input === "object" &&
+    input !== null &&
+    "terminalId" in input &&
+    input.terminalId === NATIVE_OMP_TERMINAL_ID
+  ) {
+    return method === WS_METHODS.terminalObserve
+      ? [AuthTerminalReadScope, AuthOrchestrationReadScope]
+      : [AuthTerminalOperateScope, AuthOrchestrationOperateScope];
+  }
   if (method === WS_METHODS.gitPreparePullRequestThread && input !== undefined) {
     const payload = decodePrepareThread(input);
     if (payload.mode === "worktree" && payload.threadId !== undefined)

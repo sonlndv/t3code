@@ -1,8 +1,9 @@
 import * as Schema from "effect/Schema";
-import { TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 
 export const DEFAULT_TERMINAL_ID = "term-1";
+export const NATIVE_OMP_TERMINAL_ID = "native-omp";
 export const DEFAULT_MAX_TERMINAL_BUFFER_BYTES = 512 * 1024;
 
 const historyEncoder = new TextEncoder();
@@ -137,7 +138,10 @@ const TerminalColsSchema = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)).ch
 const TerminalRowsSchema = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)).check(
   Schema.isLessThanOrEqualTo(500),
 );
-const TerminalIdSchema = TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(128));
+const TerminalKeyPart = TrimmedNonEmptyStringSchema.check(
+  Schema.makeFilter((value: string) => !value.includes("\0"), { expected: "an ID without NUL" }),
+);
+const TerminalIdSchema = TerminalKeyPart.check(Schema.isMaxLength(128));
 const TerminalEnvKeySchema = Schema.String.check(
   Schema.isPattern(/^[A-Za-z_][A-Za-z0-9_]*$/),
 ).check(Schema.isMaxLength(128));
@@ -147,7 +151,7 @@ const TerminalEnvSchema = Schema.Record(TerminalEnvKeySchema, TerminalEnvValueSc
 );
 
 export const TerminalThreadInput = Schema.Struct({
-  threadId: TrimmedNonEmptyStringSchema,
+  threadId: TerminalKeyPart,
 });
 export type TerminalThreadInput = typeof TerminalThreadInput.Type;
 
@@ -166,6 +170,7 @@ export const TerminalOpenInput = Schema.Struct({
   rows: Schema.optional(TerminalRowsSchema),
   env: Schema.optional(TerminalEnvSchema),
   providerInstanceId: Schema.optional(ProviderInstanceId),
+  nativeOmpThreadId: Schema.optionalKey(ThreadId),
   stopOnSettle: Schema.optional(Schema.Boolean),
 });
 export type TerminalOpenInput = typeof TerminalOpenInput.Type;
@@ -178,6 +183,7 @@ export const TerminalAttachInput = Schema.Struct({
   rows: Schema.optional(TerminalRowsSchema),
   env: Schema.optional(TerminalEnvSchema),
   providerInstanceId: Schema.optional(ProviderInstanceId),
+  nativeOmpThreadId: Schema.optionalKey(ThreadId),
   stopOnSettle: Schema.optional(Schema.Boolean),
   restartIfNotRunning: Schema.optional(Schema.Boolean),
   // Resubscriptions preserve stopped terminals; unknown IDs recover after a server restart.
@@ -478,6 +484,15 @@ export class TerminalProviderEnvironmentError extends Schema.TaggedError<Termina
   }
 }
 
+export class NativeOmpTerminalError extends Schema.TaggedError<NativeOmpTerminalError>()(
+  "NativeOmpTerminalError",
+  { detail: Schema.String },
+) {
+  override get message() {
+    return this.detail;
+  }
+}
+
 export class TerminalNotRunningError extends Schema.TaggedError<TerminalNotRunningError>()(
   "TerminalNotRunningError",
   {
@@ -526,6 +541,7 @@ export const TerminalError = Schema.Union([
   TerminalSessionLookupError,
   TerminalProviderInstanceNotFoundError,
   TerminalProviderEnvironmentError,
+  NativeOmpTerminalError,
   TerminalNotRunningError,
   TerminalWriteError,
   TerminalResizeError,

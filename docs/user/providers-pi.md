@@ -3,6 +3,46 @@
 T3 Code can use your existing Pi coding agent installation while keeping Pi's models, auth,
 extensions, skills, context files, and native session history.
 
+## Oh My Pi (OMP)
+
+To use OMP for a new thread, install `omp` on the machine running the T3 Code
+server and sign in with `omp login`. At startup T3 Code enables **OMP** if it finds
+the executable on `PATH`. If you disabled OMP or installed it elsewhere, enable it
+in **Settings → Providers** and set its binary path if needed.
+
+Choose **OMP** in the new thread's model picker. You can also select it for text
+generation, such as thread titles and commit messages. OMP usage is listed
+separately from Pi. Existing **Local ACP command** threads keep using `omp acp`;
+you don't need to move them or change your default model.
+
+To run an OMP workflow in chat, ask OMP to use its own `task` tool. OMP picks
+workers using its configured roles and models. Picking **OMP** does not turn a
+Claude Code or Codex thread into an OMP thread. Those providers keep their own tools.
+
+### Use OMP's own interface in the same conversation
+
+Use OMP's own interface inside T3 for native screens, extension menus, keyboard
+shortcuts, and `/model`. Both interfaces use the same saved OMP conversation.
+
+1. Finish the current turn and any background work, then archive the thread.
+   Archiving closes the thread's existing T3 terminals.
+2. In **Settings → Archive**, choose **Open OMP** next to that thread.
+3. When you're finished, quit OMP, unarchive the thread, and continue in chat.
+
+From a terminal on the server machine you can also run `t3 thread native <thread-id>`.
+Copy the thread ID from the sidebar menu before archiving.
+
+OMP reads and writes the same native conversation in both interfaces. T3's chat
+timeline shows work done through T3; terminal-only turns stay in OMP's history.
+Starting or forking a different session inside OMP does not redirect the T3 thread.
+The terminal uses OMP's own tools and approvals. T3 tools tied to the archived
+thread become available again when you return to T3.
+
+The command refuses to open a busy session or one from a different OMP profile.
+Use T3 chat for managed environments, restricted linked threads, plan mode, or
+instances that need secrets stored by T3. Native OMP can't enforce those T3
+restrictions or retrieve those secrets.
+
 ## Set Up Pi
 
 1. Install [Pi](https://pi.dev) on the machine running the T3 Code server. Pi requires Node.js

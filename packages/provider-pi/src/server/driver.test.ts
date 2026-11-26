@@ -17,7 +17,7 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as TestProviderHost from "@t3tools/provider-testing/TestProviderHost";
 import type { PiSettings } from "../settings.ts";
-import { PiDriver } from "./driver.ts";
+import { OmpDriver, PiDriver } from "./driver.ts";
 
 const layerTest = Layer.mergeAll(
   TestProviderHost.layer({
@@ -258,6 +258,106 @@ it.layer(layerTest)("PiDriver workspace discovery", (it) => {
           (yield* instance.snapshot.getSnapshot).skills.map((skill) => skill.name),
           ["personal"],
         );
+      }),
+  );
+});
+
+it.layer(layerTest)("OMP transcript usage", (it) => {
+  it.effect("attributes OMP and Pi separately even when they share a session directory", () =>
+    Effect.gen(function* () {
+      const timestamp = "2026-01-02T03:04:05.000Z";
+      // Sanitized OMP 19.2.1 local-provider session. Its title precedes the session header.
+      const assistant = {
+        type: "message",
+        id: "answer",
+        timestamp,
+        parentId: "prompt",
+        message: {
+          role: "assistant",
+          api: "openai-completions",
+          provider: "t3fixture",
+          model: "fixture",
+          content: [{ type: "text", text: "OK" }],
+          stopReason: "stop",
+          usage: {
+            input: 41,
+            output: 8,
+            cacheRead: 0,
+            cacheWrite: 0,
+            totalTokens: 49,
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+          },
+        },
+      };
+      const session = { type: "session", version: 3, id: "session", timestamp, cwd: "/workspace" };
+      const omp = [
+        { type: "title", v: 1, title: "Example", updatedAt: timestamp },
+        session,
+        { ...assistant, runtime: { version: "19.2.1" } },
+      ];
+      for (const driver of [OmpDriver, PiDriver]) {
+        const usage = driver.usage;
+        if (usage?.kind !== "transcripts") return yield* Effect.die("Missing transcript reader");
+        const expected = driver === OmpDriver ? "omp" : "pi";
+        const dirs = yield* usage.directories(
+          {
+            instanceId: ProviderInstanceId.make(expected),
+            config: driver.defaultConfig(),
+            environment: { HOME: "/home/test", USERPROFILE: "/home/test" },
+            configured: false,
+          },
+          { awaitRefresh: false },
+        );
+        assert.deepEqual(dirs, [{ dir: `/home/test/.${expected}/agent/sessions` }]);
+        const readRecords = (entries: ReadonlyArray<unknown>) => {
+          const state = usage.format.state?.initial();
+          return entries.flatMap((entry) => usage.format.parseLine(JSON.stringify(entry), state));
+        };
+        const pi = [session, assistant];
+        const records = readRecords(driver === OmpDriver ? omp : pi);
+        assert.deepEqual(
+          records.map((r) => [
+            r.provider,
+            r.sessionId,
+            r.model,
+            r.totals.uncachedInputTokens,
+            r.totals.outputTokens,
+          ]),
+          [[expected, "session", "t3fixture/fixture", 41, 8]],
+        );
+        assert.deepEqual(readRecords(driver === OmpDriver ? pi : omp), []);
+      }
+    }),
+  );
+
+  it.effect(
+    "finds terminal and T3 OMP transcripts under their configured agent and session homes",
+    () =>
+      Effect.gen(function* () {
+        const usage = OmpDriver.usage;
+        if (usage?.kind !== "transcripts")
+          return yield* Effect.die("Missing OMP transcript reader");
+        const dirs = yield* usage.directories(
+          {
+            instanceId: ProviderInstanceId.make("omp-work"),
+            config: {
+              ...OmpDriver.defaultConfig(),
+              launchArgs: "--profile=work --session-dir /t3/sessions",
+            },
+            environment: {
+              HOME: "/home/test",
+              USERPROFILE: "/home/test",
+              PI_CODING_AGENT_DIR: "/custom",
+            },
+            configured: true,
+          },
+          { awaitRefresh: false },
+        );
+        assert.deepEqual(dirs, [
+          { dir: "/t3/sessions" },
+          { dir: "/custom/sessions" },
+          { dir: "/home/test/.omp/profiles/work/agent/sessions" },
+        ]);
       }),
   );
 });

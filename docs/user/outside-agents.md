@@ -176,6 +176,9 @@ pass `--worktree <base-branch>`. Its title is the message's first line, or
 started in the app are. `send` never interrupts: a busy thread gets the message
 as its next turn. Pass `-` as the message to read it from stdin.
 
+To switch an existing OMP chat to the interactive OMP terminal and back, see
+[Use OMP's own interface in the same conversation](./providers-pi.md#use-omps-own-interface-in-the-same-conversation).
+
 To choose the model, pass `--provider <instance-id> --model <slug>`. Add
 `--option id=value` for each model option. For reasoning effort, Codex uses
 `--option reasoningEffort=high`, while Claude uses `--option effort=high`.

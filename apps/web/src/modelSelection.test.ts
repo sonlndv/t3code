@@ -400,6 +400,11 @@ describe("instance-scoped model selection", () => {
       missingModel: "anthropic/claude-sonnet-4",
     },
     {
+      driverName: "omp",
+      availableModel: "default",
+      missingModel: "example/chosen-model",
+    },
+    {
       driverName: "acpRegistry",
       availableModel: "default",
       missingModel: "gateway/chosen-model",

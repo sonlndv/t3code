@@ -1,5 +1,11 @@
 import { NativeScrollView } from "../../native/NativeScrollViewMarker";
 import { Button } from "../../components/ui/Button";
+import * as Dialog from "../../components/ui/Dialog";
+import { canOpenNativeOmpTerminal } from "@t3tools/client-runtime/state/shell";
+import {
+  isAtomCommandInterrupted,
+  squashAtomCommandFailure,
+} from "@t3tools/client-runtime/state/runtime";
 import type {
   EnvironmentProject,
   EnvironmentThreadShell,
@@ -7,16 +13,18 @@ import type {
 import { LegendList } from "@legendapp/list/react-native";
 import {
   AuthOrchestrationOperateScope,
+  AuthTerminalOperateScope,
+  NATIVE_OMP_TERMINAL_ID,
   type EnvironmentId,
   type EnvironmentMachineKind,
   resolveEnvironmentMachineKind,
 } from "@t3tools/contracts";
-import { useNavigation } from "@react-navigation/native";
+import { StackActions, useNavigation } from "@react-navigation/native";
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
 import { AppBar } from "../../components/ui/AppBar";
 import { SymbolView } from "../../components/ui/AppSymbol";
 import { T, useGT } from "gt-react-native";
-import { useMemo, useRef, type ComponentProps } from "react";
+import { useMemo, useRef, useState, type ComponentProps } from "react";
 import { useWindowDimensions, View } from "react-native";
 import { RefreshControl } from "../../components/ui/RefreshControl";
 import { GestureDetector, useNativeGesture } from "react-native-gesture-handler";
@@ -30,6 +38,9 @@ import { RelativeTime } from "../../components/RelativeTime";
 import { useUniwindTheme } from "../../lib/useUniwindTheme";
 import { useServerConfigs } from "../../state/entities";
 import { useEnvironmentScope } from "../../state/session";
+import { terminalEnvironment } from "../../state/terminal";
+import { useAtomCommand } from "../../state/use-atom-command";
+import { hasNativeTerminalSurface } from "../terminal/nativeTerminalModule";
 import { ThreadSwipeable } from "../home/thread-swipe-actions";
 import type { ArchivedThreadGroup, ArchivedThreadSortOrder } from "./archivedThreadList";
 import { SettingsScreenContent } from "../settings/components/SettingsScreen";
@@ -132,6 +143,8 @@ type ArchivedThreadListItem =
       readonly kind: "thread";
       readonly key: string;
       readonly environmentLabel: string | null;
+      readonly workspaceRoot: string;
+      readonly nativeOmpAvailable: boolean;
       readonly isFirst: boolean;
       readonly isLast: boolean;
       readonly thread: EnvironmentThreadShell;
@@ -176,6 +189,8 @@ function ProjectGroupLabel(props: {
 
 function ArchivedThreadRow(props: {
   readonly environmentLabel: string | null;
+  readonly workspaceRoot: string;
+  readonly nativeOmpAvailable: boolean;
   readonly isFirst: boolean;
   readonly isLast: boolean;
   readonly onDelete: () => void;
@@ -192,6 +207,41 @@ function ArchivedThreadRow(props: {
     props.thread.environmentId,
     AuthOrchestrationOperateScope,
   );
+  const navigation = useNavigation();
+  const canOperateTerminal = useEnvironmentScope(
+    props.thread.environmentId,
+    AuthTerminalOperateScope,
+  );
+  const openTerminal = useAtomCommand(terminalEnvironment.open, { reportFailure: false });
+  const [opening, setOpening] = useState(false);
+  const openOmp = async () => {
+    if (opening) return;
+    setOpening(true);
+    const { environmentId, id: threadId, worktreePath, title } = props.thread;
+    const result = await openTerminal({
+      environmentId,
+      input: {
+        threadId,
+        nativeOmpThreadId: threadId,
+        terminalId: NATIVE_OMP_TERMINAL_ID,
+        cwd: worktreePath ?? props.workspaceRoot,
+      },
+    });
+    setOpening(false);
+    if (!navigation.isFocused()) return;
+    if (result._tag === "Success") {
+      navigation.dispatch(
+        StackActions.push("ThreadTerminal", {
+          environmentId,
+          threadId,
+          terminalId: NATIVE_OMP_TERMINAL_ID,
+          nativeOmp: { title, cwd: result.value.cwd },
+        }),
+      );
+    } else if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+      Dialog.alert(gt("Terminal unavailable"), String(squashAtomCommandFailure(result)));
+    }
+  };
   const subtitle = [props.environmentLabel, props.thread.branch].filter((part): part is string =>
     Boolean(part),
   );
@@ -235,6 +285,16 @@ function ArchivedThreadRow(props: {
               {subtitle.join(" · ")}
             </Text>
           </View>
+        ) : null}
+        {props.nativeOmpAvailable && canOperateThread && canOperateTerminal ? (
+          <Button
+            size="compact"
+            tone="secondary"
+            icon="terminal"
+            label={gt("Open {app}", { app: "OMP" })}
+            loading={opening}
+            onPress={() => void openOmp()}
+          />
         ) : null}
       </View>
     </View>
@@ -333,6 +393,10 @@ export function ArchivedThreadsScreen(props: {
           kind: "thread",
           key: `${thread.environmentId}:${thread.id}`,
           environmentLabel,
+          workspaceRoot: group.project.workspaceRoot,
+          nativeOmpAvailable:
+            hasNativeTerminalSurface() &&
+            canOpenNativeOmpTerminal(serverConfigs.get(thread.environmentId), thread),
           isFirst: index === 0,
           isLast: index === group.threads.length - 1,
           thread,
@@ -370,6 +434,8 @@ export function ArchivedThreadsScreen(props: {
     return (
       <ArchivedThreadRow
         environmentLabel={item.environmentLabel}
+        workspaceRoot={item.workspaceRoot}
+        nativeOmpAvailable={item.nativeOmpAvailable}
         isFirst={item.isFirst}
         isLast={item.isLast}
         onDelete={() => onDeleteThread(item.thread)}

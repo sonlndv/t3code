@@ -5,6 +5,7 @@ import {
 } from "@t3tools/contracts";
 import { createModelCapabilities } from "@t3tools/shared/model";
 import * as Predicate from "effect/Predicate";
+import { PI_FLAVOR, type PiFlavor } from "./flavor.ts";
 
 // xhigh/max require per-model thinkingLevelMap opt-in; global advertising makes set_thinking_level fail.
 const PI_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
@@ -35,10 +36,11 @@ export const PI_STANDARD_SERVICE_TIER = "default";
 export function piModelCapabilities(
   model: unknown,
   defaultThinkingLevel: unknown,
+  flavor: PiFlavor = PI_FLAVOR,
 ): ModelCapabilities {
   const optionDescriptors = [
-    thinkingDescriptor(model, defaultThinkingLevel),
-    serviceTierDescriptor(model),
+    thinkingDescriptor(model, defaultThinkingLevel, flavor),
+    flavor.binaryName === "pi" ? serviceTierDescriptor(model) : undefined,
   ].filter(Predicate.isNotUndefined);
   return optionDescriptors.length === 0
     ? EMPTY_PI_MODEL_CAPABILITIES
@@ -48,19 +50,37 @@ export function piModelCapabilities(
 function thinkingDescriptor(
   model: unknown,
   defaultThinkingLevel: unknown,
+  flavor: PiFlavor,
 ): ProviderOptionDescriptor | undefined {
-  const levels = supportedPiThinkingLevelsFromModel(model);
+  const isOmp = flavor.binaryName === "omp";
+  const efforts = recordField(model, "thinking");
+  const levels = isOmp
+    ? Array.isArray(efforts) && recordField(model, "reasoning") === true
+      ? PI_THINKING_LEVELS.filter((level) => level === "off" || efforts.includes(level))
+      : []
+    : supportedPiThinkingLevelsFromModel(model);
   if (levels.length === 0) return undefined;
   const defaultLevel = clampPiThinkingLevel(defaultThinkingLevel, levels);
   return {
     id: "thinking",
     label: "Thinking",
     type: "select",
-    options: levels.map((level): ProviderOptionChoice => ({
-      id: level,
-      label: PI_THINKING_LEVEL_LABELS[level],
-      ...(level === defaultLevel ? { isDefault: true } : {}),
-    })),
+    options: [
+      ...(isOmp
+        ? [
+            {
+              id: "auto",
+              label: "Auto",
+              ...(defaultThinkingLevel === "auto" ? { isDefault: true } : {}),
+            },
+          ]
+        : []),
+      ...levels.map((level): ProviderOptionChoice => ({
+        id: level,
+        label: PI_THINKING_LEVEL_LABELS[level],
+        ...(level === defaultLevel ? { isDefault: true } : {}),
+      })),
+    ],
   };
 }
 

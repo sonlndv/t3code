@@ -5,6 +5,9 @@ import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
 import {
   DEFAULT_TERMINAL_ID,
   DEFAULT_MAX_TERMINAL_BUFFER_BYTES,
+  NATIVE_OMP_TERMINAL_ID,
+  NativeOmpTerminalError,
+  type ThreadId,
   retainedTerminalHistory,
   TERMINAL_SEQUENCE_GROUND,
   terminalSequenceEnd,
@@ -66,6 +69,7 @@ import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as SynchronizedRef from "effect/SynchronizedRef";
+import * as SqlClient from "effect/sql/SqlClient";
 
 import packageJson from "../../package.json" with { type: "json" };
 import * as ServerConfig from "../config.ts";
@@ -236,7 +240,10 @@ export class TerminalManager extends Context.Service<
     readonly clear: (input: TerminalClearInput) => Effect.Effect<void, TerminalError>;
 
     /** Omit terminalId to close all sessions for the thread. */
-    readonly close: (input: TerminalCloseInput) => Effect.Effect<void, TerminalError>;
+    readonly close: (
+      input: TerminalCloseInput,
+      mayCloseNativeOmp?: boolean,
+    ) => Effect.Effect<void, TerminalError>;
 
     readonly closeOnSettle: (input: { readonly threadId: string }) => Effect.Effect<void>;
 
@@ -254,6 +261,7 @@ export class TerminalManager extends Context.Service<
 
     readonly subscribeMetadata: (
       listener: (event: TerminalMetadataStreamEvent) => Effect.Effect<void>,
+      includeNativeOmp?: boolean,
     ) => Effect.Effect<() => void>;
   }
 >()("t3/terminal/Manager/TerminalManager") {}
@@ -1713,6 +1721,9 @@ interface TerminalManagerOptions {
   historyLineLimit?: number;
   historyByteLimit?: number;
   ptyAdapter: PtyAdapter.PtyAdapter["Service"];
+  resolveNativeOmpLaunch?: (
+    threadId: ThreadId,
+  ) => Effect.Effect<{ cwd: string; command: ShellCandidate }, NativeOmpTerminalError>;
   shellResolver?: () => string;
   env?: NodeJS.ProcessEnv;
   managedBinaryCacheDir?: string;
@@ -1790,12 +1801,57 @@ export const resolveProviderInstanceTerminalEnvironment = Effect.fn(
 export const make = Effect.fn("TerminalManager.make")(function* (
   deriveConfigMap: typeof deriveProviderInstanceConfigMap,
 ) {
-  const { terminalLogsDir, providerStatusCacheDir, baseDir } = yield* ServerConfig.ServerConfig;
+  const { terminalLogsDir, providerStatusCacheDir, baseDir, stateDir, devUrl } =
+    yield* ServerConfig.ServerConfig;
   const ptyAdapter = yield* PtyAdapter.PtyAdapter;
   const portDiscovery = yield* PortScanner.PortDiscovery;
   const nativeTelemetry = yield* NativeTelemetryClient.NativeTelemetryClient;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const path = yield* Path.Path;
+  const sql = yield* SqlClient.SqlClient;
+  const executable = yield* HostProcess.ExecutablePath;
+  const standalone = yield* HostProcess.IsExecutable;
+  const entry = (yield* HostProcess.Arguments)[1];
+  const resolveNativeOmpLaunch = Effect.fn("terminal.resolveNativeOmpLaunch")(function* (
+    threadId: ThreadId,
+  ) {
+    if (serverSettings.managedPolicy !== undefined) {
+      return yield* new NativeOmpTerminalError({
+        detail: "Native OMP is unavailable under this server's managed policy.",
+      });
+    }
+    if (!path.isAbsolute(executable) || (!standalone && (!entry || !path.isAbsolute(entry)))) {
+      return yield* new NativeOmpTerminalError({
+        detail: "Cannot locate the running T3 executable.",
+      });
+    }
+    const { readNativeThread } = yield* Effect.promise(() => import("../cli/threadNative.ts"));
+    const target = yield* readNativeThread(threadId).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+      Effect.mapError((error) => new NativeOmpTerminalError({ detail: error.detail })),
+    );
+    if (!path.isAbsolute(target.cwd)) {
+      return yield* new NativeOmpTerminalError({
+        detail: "The saved workspace has no absolute path.",
+      });
+    }
+    return {
+      cwd: target.cwd,
+      command: {
+        shell: executable,
+        args: [
+          ...(!standalone && entry ? [entry] : []),
+          "thread",
+          "native",
+          "--base-dir",
+          baseDir,
+          ...(devUrl && stateDir === path.join(baseDir, "dev") ? ["--dev-url", devUrl.href] : []),
+          "--",
+          threadId,
+        ],
+      },
+    };
+  });
   const resolveProviderInstanceEnvironment = Effect.fn(
     "terminal.resolveProviderInstanceEnvironment",
   )((rawProviderInstanceId: string, env: Record<string, string> | undefined) =>
@@ -1820,6 +1876,7 @@ export const make = Effect.fn("TerminalManager.make")(function* (
     registerTerminalProcesses: portDiscovery.registerTerminalProcesses,
     unregisterTerminal: portDiscovery.unregisterTerminal,
     resolveProviderInstanceEnvironment,
+    resolveNativeOmpLaunch,
   });
 });
 
@@ -2351,6 +2408,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     terminalId: string,
     history: BoundedTerminalHistory,
   ) {
+    if (terminalId === NATIVE_OMP_TERMINAL_ID) return;
     yield* persistWorker.enqueue(toSessionKey(threadId, terminalId), {
       history,
       immediate: false,
@@ -2369,6 +2427,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     terminalId: string,
     history: BoundedTerminalHistory,
   ) {
+    if (terminalId === NATIVE_OMP_TERMINAL_ID) return;
     yield* persistWorker.enqueue(toSessionKey(threadId, terminalId), {
       history,
       immediate: true,
@@ -2424,6 +2483,10 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     threadId: string,
     terminalId: string,
   ) {
+    // Native PTY scrollback belongs to this process lifetime. OMP owns the durable session.
+    if (terminalId === NATIVE_OMP_TERMINAL_ID) {
+      return new BoundedTerminalHistory(historyLineLimit, "", historyByteLimit);
+    }
     const nextPath = historyPath(threadId, terminalId);
     for (const sourcePath of historyPaths(threadId, terminalId)) {
       const migrating = sourcePath !== nextPath;
@@ -2865,6 +2928,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     session: TerminalSessionState,
     input: TerminalStartInput,
     eventType: "started" | "restarted",
+    nativeCommand?: ShellCandidate,
   ) {
     yield* stopProcess(session);
     yield* Effect.annotateCurrentSpan({
@@ -2901,12 +2965,14 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       increment(terminalSessionsTotal, { lifecycle: eventType }).pipe(
         Effect.andThen(
           Effect.gen(function* () {
-            const shellCandidates = yield* resolveShellCandidates(
-              shellResolver,
-              platform,
-              baseEnv,
-              session.runtimeEnv?.T3CODE_TERMINAL_SHELL ?? baseEnv.T3CODE_TERMINAL_SHELL,
-            ).pipe(Effect.provideService(FileSystem.FileSystem, fileSystem));
+            const shellCandidates = nativeCommand
+              ? [nativeCommand]
+              : yield* resolveShellCandidates(
+                  shellResolver,
+                  platform,
+                  baseEnv,
+                  session.runtimeEnv?.T3CODE_TERMINAL_SHELL ?? baseEnv.T3CODE_TERMINAL_SHELL,
+                ).pipe(Effect.provideService(FileSystem.FileSystem, fileSystem));
             const terminalEnv = createTerminalSpawnEnv(
               baseEnv,
               session.runtimeEnv,
@@ -2914,8 +2980,12 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
               yield* HostProcess.HomeDirectory,
               session.threadId,
             );
+            if (nativeCommand && baseEnv.ELECTRON_RUN_AS_NODE === "1") {
+              terminalEnv.ELECTRON_RUN_AS_NODE = "1";
+            }
             // Append managed install directories so agent commands resolve without shadowing user/system tools.
             if (
+              !nativeCommand &&
               options.managedBinaryCacheDir !== undefined &&
               options.managedBinaryToolsDir !== undefined
             ) {
@@ -3312,6 +3382,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
 
   const openWithWorkspaceLease = Effect.fn("terminal.openLocked")(function* (
     requestedInput: TerminalOpenInput,
+    nativeCommand?: ShellCandidate,
   ) {
     const terminalId = requestedInput.terminalId;
     yield* assertValidCwd(requestedInput.cwd);
@@ -3381,6 +3452,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
           rows,
         },
         "started",
+        nativeCommand,
       );
       return snapshot(session);
     }
@@ -3431,6 +3503,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
           rows: targetRows,
         },
         "started",
+        nativeCommand,
       );
       return snapshot(liveSession);
     }
@@ -3442,16 +3515,50 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     return snapshot(liveSession);
   });
 
-  const openLocked = (input: TerminalOpenInput) =>
-    withWorkspaceLease(
-      path.resolve(input.worktreePath ?? input.cwd),
-      openWithWorkspaceLease(input),
+  const validateNativeInput = (input: TerminalOpenInput | TerminalAttachInput) =>
+    input.nativeOmpThreadId !== undefined &&
+    (input.threadId !== input.nativeOmpThreadId ||
+      input.terminalId !== NATIVE_OMP_TERMINAL_ID ||
+      input.env !== undefined ||
+      input.providerInstanceId !== undefined ||
+      input.stopOnSettle === true)
+      ? Effect.fail(
+          new NativeOmpTerminalError({
+            detail: "Native OMP requires its own thread and terminal without launch overrides.",
+          }),
+        )
+      : Effect.void;
+
+  const openLocked = Effect.fn("terminal.prepareOpen")(function* (
+    input: TerminalOpenInput | TerminalAttachInput,
+  ) {
+    if (input.terminalId === NATIVE_OMP_TERMINAL_ID) {
+      if (input.nativeOmpThreadId === undefined || !options.resolveNativeOmpLaunch) {
+        return yield* new NativeOmpTerminalError({ detail: "Open this terminal with native OMP." });
+      }
+      const existing = yield* getSession(input.threadId, input.terminalId);
+      if (Option.isSome(existing) && existing.value.process) return snapshot(existing.value);
+      const launch = yield* options.resolveNativeOmpLaunch(input.nativeOmpThreadId);
+      return yield* withWorkspaceLease(
+        launch.cwd,
+        openWithWorkspaceLease(
+          { ...input, cwd: launch.cwd, worktreePath: launch.cwd },
+          launch.command,
+        ),
+      ).pipe(Effect.provideService(TerminalCwdRecovery, TerminalCwdRecovery.defaultValue()));
+    }
+    if (!input.cwd) return yield* new TerminalSessionLookupError(input);
+    const resolved = yield* resolveLaunchInputEnvironment({ ...input, cwd: input.cwd });
+    return yield* withWorkspaceLease(
+      path.resolve(resolved.worktreePath ?? resolved.cwd),
+      openWithWorkspaceLease(resolved),
     );
+  });
 
   const open: TerminalManager["Service"]["open"] = (input) =>
     withThreadLock(
       input.threadId,
-      resolveLaunchInputEnvironment(input).pipe(Effect.flatMap(openLocked)),
+      validateNativeInput(input).pipe(Effect.andThen(openLocked(input))),
     );
 
   const getShell = Effect.fn("terminal.getShell")(function* (input: TerminalObserveInput) {
@@ -3465,38 +3572,33 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
   const openOrAttachForStream = Effect.fnUntraced(function* (requestedInput: TerminalAttachInput) {
     const terminalId = requestedInput.terminalId;
     const input = withSharedGrid(toSessionKey(requestedInput.threadId, terminalId), requestedInput);
+    yield* validateNativeInput(input);
     const existing = yield* getSession(input.threadId, terminalId);
 
     if (Option.isNone(existing)) {
-      if (input.resume && closedSessionKeys.has(toSessionKey(input.threadId, terminalId))) {
+      const previouslyClosed = closedSessionKeys.has(toSessionKey(input.threadId, terminalId));
+      if (
+        (input.resume && previouslyClosed) ||
+        (terminalId === NATIVE_OMP_TERMINAL_ID &&
+          (input.resume || previouslyClosed || !input.nativeOmpThreadId))
+      ) {
         return null;
       }
-      if (!input.cwd) {
-        return yield* new TerminalSessionLookupError({
-          threadId: input.threadId,
-          terminalId,
-        });
-      }
-
-      const resolvedInput = yield* resolveLaunchInputEnvironment({
-        ...input,
-        terminalId,
-        cwd: input.cwd,
-      });
-      return yield* Effect.uninterruptible(openLocked(resolvedInput));
+      return yield* Effect.uninterruptible(openLocked(input));
     }
 
     const session = existing.value;
     const targetCols = input.cols ?? session.cols;
     const targetRows = input.rows ?? session.rows;
 
-    if (!input.resume && !session.process && input.cwd && input.restartIfNotRunning === true) {
-      const resolvedInput = yield* resolveLaunchInputEnvironment({
-        ...input,
-        terminalId,
-        cwd: input.cwd,
-      });
-      return yield* Effect.uninterruptible(openLocked(resolvedInput));
+    if (
+      terminalId !== NATIVE_OMP_TERMINAL_ID &&
+      !input.resume &&
+      !session.process &&
+      input.cwd &&
+      input.restartIfNotRunning === true
+    ) {
+      return yield* Effect.uninterruptible(openLocked(input));
     }
 
     if (
@@ -3780,7 +3882,10 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       Effect.flatMap((metadataEvent) => (metadataEvent ? listener(metadataEvent) : Effect.void)),
     );
 
-  const subscribeMetadata: TerminalManager["Service"]["subscribeMetadata"] = (listener) => {
+  const subscribeMetadata: TerminalManager["Service"]["subscribeMetadata"] = (
+    listener,
+    includeNativeOmp = true,
+  ) => {
     let unsubscribe: (() => void) | null = null;
 
     return Effect.gen(function* () {
@@ -3788,6 +3893,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       let deliverLive = false;
 
       unsubscribe = yield* subscribe((event) => {
+        if (!includeNativeOmp && event.terminalId === NATIVE_OMP_TERMINAL_ID) return Effect.void;
         if (!deliverLive) {
           bufferedEvents.push(event);
           return Effect.void;
@@ -3799,7 +3905,9 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       const terminals = yield* readAllTerminalMetadata();
       yield* listener({
         type: "snapshot",
-        terminals,
+        terminals: includeNativeOmp
+          ? terminals
+          : terminals.filter((terminal) => terminal.terminalId !== NATIVE_OMP_TERMINAL_ID),
         managerId,
       });
 
@@ -3899,10 +4007,12 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         const eventStamp = advanceEventSequence(session);
         // A drain waits for the key to go idle, which never happens while the shell keeps
         // printing; every reader of the file flushes it first.
-        yield* persistWorker.enqueue(toSessionKey(input.threadId, terminalId), {
-          history: session.history,
-          immediate: true,
-        });
+        if (terminalId !== NATIVE_OMP_TERMINAL_ID) {
+          yield* persistWorker.enqueue(toSessionKey(input.threadId, terminalId), {
+            history: session.history,
+            immediate: true,
+          });
+        }
         yield* publishEvent({
           type: "cleared",
           threadId: input.threadId,
@@ -3912,7 +4022,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       }),
     );
 
-  const close: TerminalManager["Service"]["close"] = (input) =>
+  const close: TerminalManager["Service"]["close"] = (input, mayCloseNativeOmp = true) =>
     withThreadLock(
       input.threadId,
       Effect.gen(function* () {
@@ -3922,6 +4032,14 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         }
 
         const threadSessions = yield* sessionsForThread(input.threadId);
+        if (
+          !mayCloseNativeOmp &&
+          threadSessions.some((session) => session.terminalId === NATIVE_OMP_TERMINAL_ID)
+        ) {
+          return yield* new NativeOmpTerminalError({
+            detail: "Closing this thread's native OMP terminal requires orchestration:operate.",
+          });
+        }
         yield* Effect.forEach(
           threadSessions,
           (session) => closeSession(input.threadId, session.terminalId, false),
@@ -3941,6 +4059,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         const running = (yield* sessionsForThread(input.threadId)).filter(
           (session): session is TerminalSessionState & { pid: number } =>
             session.status === "running" &&
+            session.terminalId !== NATIVE_OMP_TERMINAL_ID &&
             Number.isInteger(session.pid) &&
             (input.terminalId === undefined || session.terminalId === input.terminalId),
         );
@@ -4002,6 +4121,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         session.status === "running" && Number.isInteger(session.pid) && !session.stopOnSettle,
     );
     if (running.length === 0) return false;
+    if (running.some((session) => session.terminalId === NATIVE_OMP_TERMINAL_ID)) return true;
     const { inspector } = yield* acquireSubprocessInspector(
       platform === "win32" ? CLOSE_IDLE_QUERY_TIMEOUT.win32 : CLOSE_IDLE_QUERY_TIMEOUT.posix,
     );

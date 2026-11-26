@@ -1,5 +1,7 @@
 import {
   EnvironmentId,
+  ThreadId,
+  NATIVE_OMP_TERMINAL_ID,
   type RelayClientInstallProgressEvent,
   type ServerConfig,
   type ServerLifecycleStreamEvent,
@@ -29,7 +31,14 @@ import {
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import * as RpcSession from "../rpc/session.ts";
 import type { WsRpcProtocolClient } from "../rpc/protocol.ts";
-import { runStream, subscribe, subscribeDynamicWithSession, refreshVcsBranch } from "./client.ts";
+import {
+  openTerminal,
+  runStream,
+  subscribe,
+  subscribeDynamicWithSession,
+  subscribeTerminal,
+  refreshVcsBranch,
+} from "./client.ts";
 
 const TARGET = new PrimaryConnectionTarget({
   environmentId: EnvironmentId.make("environment-1"),
@@ -551,6 +560,33 @@ describe("environment RPC", () => {
       }),
   );
 });
+
+it.effect("never opens a shell in place of native OMP on an older server", () =>
+  Effect.gen(function* () {
+    const { activeSession, supervisor } = yield* makeHarness();
+    const client = {} as WsRpcProtocolClient;
+    yield* SubscriptionRef.set(
+      activeSession,
+      Option.some({
+        ...session(client),
+        initialConfig: Effect.succeed({ featureFlags: {} } as ServerConfig),
+      }),
+    );
+    const id = ThreadId.make("archived");
+    const input = {
+      threadId: id,
+      terminalId: NATIVE_OMP_TERMINAL_ID,
+      nativeOmpThreadId: id,
+      cwd: "/repo",
+    };
+    const [open, attach] = yield* Effect.all([
+      openTerminal(input).pipe(Effect.flip),
+      subscribeTerminal(() => input).pipe(Stream.runDrain, Effect.flip),
+    ]).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+    expect(open._tag).toBe("NativeOmpTerminalError");
+    expect(attach._tag).toBe("NativeOmpTerminalError");
+  }),
+);
 
 it.effect.each([true, false])(
   "refreshes branches using the connected server capability (%s)",

@@ -34,6 +34,9 @@ In **Settings → Providers → Add provider**, select **Show more**, then **Loc
 name or path on the selected environment, add one literal argument per row, and choose a display
 name. For DeepSeek Harness, use `dsh` with arguments `--profile` and `acp`.
 
+If you already use `omp acp`, you can keep that command for existing threads.
+The built-in [OMP provider](./providers-pi.md#oh-my-pi-omp) is a separate choice for new threads.
+
 Local commands require no registry entry or download. Environment overrides apply to the command;
 credentials and skills remain managed by the installed agent or its wrapper. Models and reasoning
 options come from ACP, including model IDs that contain JSON. T3 Code launches the executable directly

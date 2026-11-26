@@ -3,7 +3,10 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 
 import type { McpProviderSessionConfig } from "@t3tools/provider-core/server/mcpSession";
+import { PI_FLAVOR, type PiFlavor } from "./flavor.ts";
 import {
+  OMP_T3_EXTENSION_SOURCE,
+  OMP_T3_MCP_CONFIG,
   PI_T3_MCP_EXTENSION_FILENAME,
   PI_T3_MCP_EXTENSION_SOURCE,
   T3_MCP_BEARER_ENV,
@@ -78,6 +81,63 @@ const PI_ARGUMENTS_WITHOUT_VALUES = new Set([
   "--verbose",
 ]);
 
+// Unknown OMP flags can be extension flags or positional prompts. In particular
+// --yolo/--auto-approve take precedence even over a later --approval-mode.
+const OMP_SESSION_FLAGS: Readonly<Record<string, "value" | "switch">> = {
+  "--model": "value",
+  "--models": "value",
+  "--provider": "value",
+  "--thinking": "value",
+  "--service-tier": "value",
+  "--api-key": "value",
+  "--session-dir": "value",
+  "--profile": "value",
+  "--tools": "value",
+  "--extension": "value",
+  "-e": "value",
+  "--skills": "value",
+  "--append-system-prompt": "value",
+  "--system-prompt": "value",
+  "--add-dir": "value",
+  "--smol": "value",
+  "--slow": "value",
+  "--offline": "switch",
+  "--no-extensions": "switch",
+  "--no-skills": "switch",
+  "--no-rules": "switch",
+  "--no-context-files": "switch",
+  "--no-lsp": "switch",
+  "--no-pty": "switch",
+  "--no-title": "switch",
+  "--no-judge": "switch",
+  "--no-spotlight": "switch",
+};
+
+export function resolveOmpLaunchArgs(launchArgs: string): PiLaunchArgsResolution {
+  const tokens = tokenizeCliArgs(launchArgs);
+  const args: string[] = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i]!;
+    const equals = token.indexOf("=");
+    const flag = equals === -1 ? token : token.slice(0, equals);
+    if (OMP_SESSION_FLAGS[token] === "switch") {
+      args.push(token);
+    } else if (OMP_SESSION_FLAGS[flag] === "value") {
+      const value = equals === -1 ? tokens[++i] : token.slice(equals + 1);
+      if (!value || value.startsWith("-") || value.startsWith("@")) {
+        return { ok: false, message: `OMP launch argument '${flag}' requires a value.` };
+      }
+      args.push(flag, value);
+    } else {
+      return {
+        ok: false,
+        message: `Unsupported OMP launch argument '${flag}'. T3 Code owns session and approval settings.`,
+      };
+    }
+  }
+  return { ok: true, args };
+}
+
 export type PiLaunchArgsResolution =
   | { readonly ok: true; readonly args: ReadonlyArray<string> }
   | { readonly ok: false; readonly message: string };
@@ -100,7 +160,11 @@ function normalizePiBuiltInEqualsArguments(args: ReadonlyArray<string>): Readonl
   });
 }
 
-export function resolvePiLaunchArgs(launchArgs: string): PiLaunchArgsResolution {
+export function resolvePiLaunchArgs(
+  launchArgs: string,
+  flavor: PiFlavor = PI_FLAVOR,
+): PiLaunchArgsResolution {
+  if (flavor.binaryName === "omp") return resolveOmpLaunchArgs(launchArgs);
   // Pi treats equals-form tokens as extension flags; split only known built-ins.
   const args = normalizePiBuiltInEqualsArguments(tokenizeCliArgs(launchArgs));
   let hasProvider = false;
@@ -246,7 +310,28 @@ export const materializePiT3McpExtension = Effect.fn("materializePiT3McpExtensio
   return dest;
 });
 
+export const materializeOmpMcpExtension = Effect.fn("materializeOmpMcpExtension")(function* (
+  includeMcp: boolean,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-omp-mcp-" });
+  // Never auto-resume an unrelated terminal conversation in the same cwd.
+  // Keep T3 tools directly callable and their authenticated connection process-local.
+  yield* fs.writeFileString(
+    `${dir}/config.yml`,
+    includeMcp
+      ? "autoResume: false\ntools:\n  commands: false\nmcp:\n  shared: false\n  evalNamespaces: false\n"
+      : "autoResume: false\n",
+  );
+  if (includeMcp) {
+    yield* fs.writeFileString(`${dir}/.mcp.json`, OMP_T3_MCP_CONFIG);
+    yield* fs.writeFileString(`${dir}/index.js`, OMP_T3_EXTENSION_SOURCE);
+  }
+  return dir;
+});
+
 export function buildPiRpcLaunch(input: {
+  readonly flavor?: PiFlavor;
   readonly launchArgs: ReadonlyArray<string>;
   readonly environment: NodeJS.ProcessEnv;
   readonly mcpSession: McpProviderSessionConfig | undefined;
@@ -263,6 +348,7 @@ export function buildPiRpcLaunch(input: {
   readonly args: ReadonlyArray<string>;
   readonly env: NodeJS.ProcessEnv;
 } {
+  const isOmp = input.flavor?.binaryName === "omp";
   const hasT3Extension = input.disableExtensions !== true && input.extensionPath !== undefined;
   const hasT3Mcp = hasT3Extension && input.mcpSession !== undefined;
   const extensionSafeArgs =
@@ -273,20 +359,34 @@ export function buildPiRpcLaunch(input: {
     input.disableTools === true ? withoutToolSelectionArgs(extensionSafeArgs) : extensionSafeArgs;
   const args = [
     "--mode",
-    "rpc",
+    isOmp && !input.disableTools ? "rpc-ui" : "rpc",
     ...(input.ephemeral === true
       ? ["--no-session"]
       : input.sessionPath !== undefined
-        ? ["--session", input.sessionPath]
+        ? [isOmp ? "--resume" : "--session", input.sessionPath]
         : []),
     ...launchArgs,
     ...(input.shortLived === true && !launchArgs.includes("--offline") ? ["--offline"] : []),
     // Restrictions must follow launch args so user flags cannot re-enable unattended tools/extensions.
     ...(input.disableExtensions === true ? ["--no-extensions"] : []),
     ...(input.disableTools === true ? ["--no-tools"] : []),
+    ...(isOmp
+      ? [
+          "--approval-mode",
+          input.runtimeMode === "full-access"
+            ? "yolo"
+            : input.runtimeMode === "auto-accept-edits"
+              ? "write"
+              : "always-ask",
+        ]
+      : []),
   ];
+  if (isOmp && input.extensionPath !== undefined && hasT3Extension) {
+    args.push("--config", `${input.extensionPath}/config.yml`);
+  }
   if (
     hasT3Extension &&
+    (!isOmp || hasT3Mcp) &&
     input.extensionPath !== undefined &&
     !hasExplicitExtension(args, input.extensionPath)
   ) {
@@ -297,15 +397,16 @@ export function buildPiRpcLaunch(input: {
   delete environment[T3_MCP_URL_ENV];
   delete environment[T3_MCP_BEARER_ENV];
   delete environment[T3_PI_MCP_EXTENSION_PATH_ENV];
+  if (isOmp) delete environment[T3_PI_RUNTIME_MODE_ENV];
 
   return {
     args,
     env: {
       ...environment,
-      ...(hasT3Extension && input.extensionPath !== undefined
+      ...(!isOmp && hasT3Extension && input.extensionPath !== undefined
         ? { [T3_PI_MCP_EXTENSION_PATH_ENV]: input.extensionPath }
         : {}),
-      ...(hasT3Extension && input.runtimeMode !== undefined
+      ...(!isOmp && hasT3Extension && input.runtimeMode !== undefined
         ? {
             [T3_PI_RUNTIME_MODE_ENV]:
               input.runtimeMode === "auto" ? "approval-required" : input.runtimeMode,

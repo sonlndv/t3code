@@ -29,6 +29,7 @@ import {
   AuthFilesystemReadScope,
   AuthOrchestrationOperateScope,
   AuthTerminalOperateScope,
+  NATIVE_OMP_TERMINAL_ID,
   type ContextMenuItem,
   type ProviderInstanceId,
   type ResolvedKeybindingsConfig,
@@ -478,7 +479,7 @@ interface TerminalViewportProps {
   worktreePath?: string | null;
   runtimeEnv?: Record<string, string>;
   providerInstanceId?: ProviderInstanceId;
-  onSessionExited: () => void;
+  onSessionExited?: () => void;
   onAddTerminalContext?: (selection: TerminalContextSelection) => void;
   /** Focuses the viewport when it mounts; otherwise focus arrives through `focusTerminal`. */
   autoFocus?: boolean;
@@ -594,7 +595,7 @@ function TerminalSessionViewport({
   const readKeybindings = useEffectEvent(() => keybindings);
   const readThreadShortcutContext = useEffectEvent(() => threadShortcutContext(threadRef));
   const handleSessionExited = useEffectEvent(() => {
-    if (hasTerminalWriteAccess()) onSessionExited();
+    if (hasTerminalWriteAccess()) onSessionExited?.();
   });
   const handleAddTerminalContext = useEffectEvent((selection: TerminalContextSelection) => {
     onAddTerminalContext?.(selection);
@@ -620,7 +621,7 @@ function TerminalSessionViewport({
   const terminalSessionAtom = attachedTerminalSessionAtom(environmentId, {
     threadId,
     terminalId,
-    cwd,
+    ...(terminalId !== NATIVE_OMP_TERMINAL_ID ? { cwd } : {}),
     ...(worktreePath !== undefined ? { worktreePath } : {}),
     ...(runtimeEnv ? { env: runtimeEnv } : {}),
     ...(providerInstanceId ? { providerInstanceId } : {}),
@@ -1023,6 +1024,7 @@ function TerminalSessionViewport({
       };
 
       function handleBeforeKey(event: KeyboardEvent): boolean {
+        if (terminalId === NATIVE_OMP_TERMINAL_ID) return true;
         const currentKeybindings = readKeybindings();
         const options = { context: { terminalFocus: true, terminalOpen: true } };
         if (preventTerminalCloseShortcut(event, currentKeybindings)) {

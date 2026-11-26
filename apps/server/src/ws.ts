@@ -34,6 +34,7 @@ import {
   AuthAccessStreamError,
   type AuthAccessStreamEvent,
   AuthOrchestrationOperateScope,
+  AuthOrchestrationReadScope,
   AuthTerminalOperateScope,
   AuthProvidersManageScope,
   type AuthEnvironmentScope,
@@ -1955,6 +1956,7 @@ export const layerWsRpc = (
           secretReferences: true,
           secretRequestReferences: true,
           featureFlags: {
+            nativeOmpTerminal: serverSettings.managedPolicy === undefined,
             secretProviders: featureFlags.secretProviders,
             tanstackSource: featureFlags.tanstackSource,
           },
@@ -3423,7 +3425,11 @@ export const layerWsRpc = (
         [WS_METHODS.terminalResize]: (input, metadata) =>
           terminalManager.resize(input, terminalViewerId(metadata)),
         [WS_METHODS.terminalClear]: (input) => terminalManager.clear(input),
-        [WS_METHODS.terminalClose]: (input) => terminalManager.close(input),
+        [WS_METHODS.terminalClose]: (input) =>
+          terminalManager.close(
+            input,
+            currentSession.scopes.includes(AuthOrchestrationOperateScope),
+          ),
         [WS_METHODS.terminalObserve]: (input) =>
           terminalOutputStream(
             (listener, registerCleanup) =>
@@ -3434,7 +3440,10 @@ export const layerWsRpc = (
         [WS_METHODS.subscribeTerminalMetadata]: (_input) =>
           Stream.callback<TerminalMetadataStreamEvent>((queue) =>
             Effect.acquireRelease(
-              terminalManager.subscribeMetadata((event) => Queue.offer(queue, event)),
+              terminalManager.subscribeMetadata(
+                (event) => Queue.offer(queue, event),
+                currentSession.scopes.includes(AuthOrchestrationReadScope),
+              ),
               (unsubscribe) => Effect.sync(unsubscribe),
             ),
           ),

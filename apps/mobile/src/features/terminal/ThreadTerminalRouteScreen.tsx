@@ -1,10 +1,12 @@
 import * as Dialog from "../../components/ui/Dialog";
 import { m } from "../../i18n/messages";
 import {
+  AuthOrchestrationOperateScope,
   AuthTerminalReadScope,
   AuthTerminalOperateScope,
   chunkTerminalWrite,
   DEFAULT_TERMINAL_ID,
+  NATIVE_OMP_TERMINAL_ID,
   EnvironmentId,
   ThreadId,
   sessionGrantsScope,
@@ -45,12 +47,12 @@ import { Button } from "../../components/ui/Button";
 import { IconButton } from "../../components/ui/IconButton";
 import { useEnvironmentPresentation } from "../../state/presentation";
 import { terminalEnvironment } from "../../state/terminal";
-import { environmentSession, readEnvironmentScope } from "../../state/session";
+import { environmentSession, readEnvironmentScope, useEnvironmentScope } from "../../state/session";
 import { useEnvironmentQuery } from "../../state/query";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { uuidv4 } from "../../lib/uuid";
-import { useServerConfigs } from "../../state/entities";
+import { useEnvironmentServerConfig, useServerConfigs } from "../../state/entities";
 import { useConnectionsReady } from "../../state/workspace";
 import {
   MAX_TERMINAL_FONT_SIZE,
@@ -112,6 +114,16 @@ function TerminalHeader(props: {
 }) {
   const gt = useGT();
   const resolveMessage = useMessages();
+  if (props.terminalId === NATIVE_OMP_TERMINAL_ID) {
+    return (
+      <AppBar
+        title="OMP"
+        subtitle={props.subtitle}
+        onBack={props.onBack}
+        backInSplitView={{ accessibilityLabel: gt("Back"), icon: "chevron.left" }}
+      />
+    );
+  }
   return (
     <AppBar
       title={gt("Terminal", { $context: "screen title" })}
@@ -289,6 +301,7 @@ type ThreadTerminalRouteScreenProps = StaticScreenProps<{
   readonly environmentId: string;
   readonly threadId: string;
   readonly terminalId?: string;
+  readonly nativeOmp?: { readonly title: string; readonly cwd: string };
 }>;
 
 type ThreadSelection = ReturnType<typeof useThreadSelection>;
@@ -316,17 +329,25 @@ export function ThreadTerminalRouteScreen(props: ThreadTerminalRouteScreenProps)
   const connectionsReady = useConnectionsReady();
   const params = props.route.params;
   const selection = useThreadSelection();
-  const { selectedThread } = selection;
+  const requestedTerminalId = firstRouteParam(params.terminalId);
   const routeEnvironmentIdRaw = firstRouteParam(params.environmentId);
   const routeEnvironmentId = routeEnvironmentIdRaw
     ? EnvironmentId.make(routeEnvironmentIdRaw)
     : null;
   const access = useTerminalAccess(routeEnvironmentId);
+  const nativeOmp = requestedTerminalId === NATIVE_OMP_TERMINAL_ID ? params.nativeOmp : undefined;
+  const selectedThread =
+    nativeOmp && routeEnvironmentId
+      ? {
+          environmentId: routeEnvironmentId,
+          id: ThreadId.make(params.threadId),
+          worktreePath: null,
+        }
+      : selection.selectedThread;
   const knownSessions = useKnownTerminalSessions({
     environmentId: selectedThread?.environmentId ?? null,
     threadId: selectedThread?.id ?? null,
   });
-  const requestedTerminalId = firstRouteParam(params.terminalId);
   // A route without a terminal shows the thread's running one. The choice is
   // made once, from the first session list that has one, so the terminal shown
   // does not change under the user as sessions come and go.
@@ -346,6 +367,20 @@ export function ThreadTerminalRouteScreen(props: ThreadTerminalRouteScreenProps)
   const explicitTerminalId = requestedTerminalId ?? bootstrapTerminalId;
   const terminalId = explicitTerminalId ?? DEFAULT_TERMINAL_ID;
   const gt = useGT();
+  const nativeEnvironmentId = terminalId === NATIVE_OMP_TERMINAL_ID ? routeEnvironmentId : null;
+  const nativeConfig = useEnvironmentServerConfig(nativeEnvironmentId);
+  const canOperateThread = useEnvironmentScope(nativeEnvironmentId, AuthOrchestrationOperateScope);
+  if (
+    terminalId === NATIVE_OMP_TERMINAL_ID &&
+    (!nativeConfig?.featureFlags?.nativeOmpTerminal || !access.canOperate || !canOperateThread)
+  ) {
+    return (
+      <EmptyState
+        title={gt("Terminal unavailable")}
+        detail={gt("This connection does not have permission to view terminals.")}
+      />
+    );
+  }
 
   if (!selectedThread) {
     if (!connectionsReady) {
@@ -400,7 +435,10 @@ function ThreadTerminal(props: {
   readonly params: ThreadTerminalRouteScreenProps["route"]["params"];
   readonly routeEnvironmentId: EnvironmentId | null;
   readonly selection: ThreadSelection;
-  readonly thread: NonNullable<ThreadSelection["selectedThread"]>;
+  readonly thread: Pick<
+    NonNullable<ThreadSelection["selectedThread"]>,
+    "environmentId" | "id" | "worktreePath"
+  >;
   readonly terminalId: string;
   readonly hasExplicitTerminalId: boolean;
   readonly access: ReturnType<typeof useTerminalAccess>;
@@ -410,6 +448,9 @@ function ThreadTerminal(props: {
   const gt = useGT();
   const messages = useMessages();
   const { selectedThreadProject, selectedEnvironmentConnection } = props.selection;
+  const isNativeOmp = terminalId === NATIVE_OMP_TERMINAL_ID;
+  const workspaceRoot =
+    (isNativeOmp ? params.nativeOmp?.cwd : null) ?? selectedThreadProject?.workspaceRoot;
   const {
     session: terminalSession,
     isAuthenticated,
@@ -524,23 +565,28 @@ function ThreadTerminal(props: {
   });
   const terminalAttachInput = useMemo(
     () =>
-      launchLocation !== null && hasResolvedFontPreference && isEnvironmentReady
-        ? {
-            threadId: selectedThread.id,
-            terminalId,
-            cwd: launchLocation.cwd,
-            worktreePath: launchLocation.worktreePath,
-            cols: initialAttachGridSize.cols,
-            rows: initialAttachGridSize.rows,
-            ...(pendingLaunch?.env ? { env: pendingLaunch.env } : {}),
-            ...(pendingLaunch ? { stopOnSettle: pendingLaunch.stopOnSettle ?? false } : {}),
-            ...(pendingLaunch ? { restartIfNotRunning: true } : {}),
-          }
-        : null,
+      isNativeOmp
+        ? hasResolvedFontPreference && isEnvironmentReady
+          ? { threadId: selectedThread.id, terminalId, ...initialAttachGridSize }
+          : null
+        : launchLocation !== null && hasResolvedFontPreference && isEnvironmentReady
+          ? {
+              threadId: selectedThread.id,
+              terminalId,
+              cwd: launchLocation.cwd,
+              worktreePath: launchLocation.worktreePath,
+              cols: initialAttachGridSize.cols,
+              rows: initialAttachGridSize.rows,
+              ...(pendingLaunch?.env ? { env: pendingLaunch.env } : {}),
+              ...(pendingLaunch ? { stopOnSettle: pendingLaunch.stopOnSettle ?? false } : {}),
+              ...(pendingLaunch ? { restartIfNotRunning: true } : {}),
+            }
+          : null,
     [
       hasResolvedFontPreference,
       initialAttachGridSize,
       isEnvironmentReady,
+      isNativeOmp,
       launchLocation,
       pendingLaunch,
       selectedThread.id,
@@ -585,7 +631,9 @@ function ThreadTerminal(props: {
   );
 
   const terminalTheme = getMobileTerminalTheme(themeId, appearanceScheme);
-  const headerSubtitle = selectedThreadProject?.title ?? "";
+  const headerSubtitle = isNativeOmp
+    ? (params.nativeOmp?.title ?? "OMP")
+    : (selectedThreadProject?.title ?? "");
   const terminalToolbarActions = useMemo<ReadonlyArray<TerminalToolbarAction>>(() => {
     const modifierActions: ReadonlyArray<TerminalToolbarAction> =
       hostPlatform === "mac"
@@ -857,7 +905,7 @@ function ThreadTerminal(props: {
     }
   };
 
-  if (!selectedThreadProject?.workspaceRoot) {
+  if (!workspaceRoot) {
     return (
       <View className="flex-1 bg-screen">
         <EmptyState
@@ -901,7 +949,7 @@ function ThreadTerminal(props: {
           status: terminal.status,
           hasRunningSubprocess: terminal.hasRunningSubprocess,
         }}
-        workspaceRoot={selectedThreadProject.workspaceRoot}
+        workspaceRoot={workspaceRoot}
         onBack={handleBack}
         onCloseTerminal={handleCloseTerminal}
         onDecreaseFontSize={handleDecreaseFontSize}
@@ -957,7 +1005,7 @@ function ThreadTerminal(props: {
                 gt("This connection does not have permission to view terminals.")
               }
             />
-          ) : canOperateTerminal && launchLocation === null ? (
+          ) : !isNativeOmp && canOperateTerminal && launchLocation === null ? (
             sessionsError !== null ? (
               <EmptyState title={gt("Could not load terminals")} detail={sessionsError} />
             ) : (
@@ -1025,9 +1073,14 @@ function ThreadTerminal(props: {
                 />
               </View>
 
+              {isNativeOmp && !isKeyboardVisible ? (
+                <Text className="px-4 py-2 text-sm text-foreground-muted">
+                  {gt("Quit OMP, then unarchive this thread to continue in chat.")}
+                </Text>
+              ) : null}
               {Platform.OS === "android" && !isKeyboardVisible ? (
                 <View className="min-h-14 flex-row items-center gap-2 bg-card-alt px-2">
-                  {hasNativeTerminalSurface() ? (
+                  {!isNativeOmp && hasNativeTerminalSurface() ? (
                     <Button label={gt("Attach output")} tone="text" onPress={requestCapture} />
                   ) : null}
                   <View className="flex-1" />
@@ -1038,7 +1091,7 @@ function ThreadTerminal(props: {
                     onPress={handleShowKeyboard}
                   />
                 </View>
-              ) : Platform.OS !== "android" && hasNativeTerminalSurface() ? (
+              ) : !isNativeOmp && Platform.OS !== "android" && hasNativeTerminalSurface() ? (
                 <Pressable
                   accessibilityRole="button"
                   onPress={() => {

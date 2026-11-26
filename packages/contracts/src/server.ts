@@ -700,8 +700,9 @@ export const ServerEventLoopStall = Schema.Struct({
 });
 export type ServerEventLoopStall = typeof ServerEventLoopStall.Type;
 
-/** The boolean `T3CODE_FEATURE_FLAGS` a server started with. Unset flags are off. */
+/** Optional server features. Flags omitted by older servers are off. */
 export const ServerFeatureFlags = Schema.Struct({
+  nativeOmpTerminal: Schema.optionalKey(Schema.Boolean),
   secretProviders: Schema.optionalKey(Schema.Boolean),
   tanstackSource: Schema.optionalKey(Schema.Boolean),
 });

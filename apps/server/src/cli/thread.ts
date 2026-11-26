@@ -35,7 +35,7 @@ import { expandHomePath } from "../os-jank.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import { readLiveServerRuntimeState } from "../serverRuntimeState.ts";
 import { unsetInheritedRepositoryEnv } from "../vcs/VcsProcess.ts";
-import { projectLocationFlags, resolveCliAuthConfig } from "./config.ts";
+import { authLocationFlags, projectLocationFlags, resolveCliAuthConfig } from "./config.ts";
 
 /**
  * Short enough that a run which stops to ask the user something is noticed
@@ -877,6 +877,20 @@ const decodeThreadId = (value: string) =>
     Effect.mapError(() => new ThreadUsageError({ detail: `'${value}' is not a thread id.` })),
   );
 
+const threadNativeCommand = Command.make("native", {
+  ...authLocationFlags,
+  thread: threadArgument,
+}).pipe(
+  Command.withDescription("Open an idle, archived native OMP thread in this machine's terminal."),
+  Command.withHandler((flags) =>
+    Effect.gen(function* () {
+      const id = yield* decodeThreadId(flags.thread);
+      const { openNativeThread } = yield* Effect.promise(() => import("./threadNative.ts"));
+      yield* openNativeThread(id, flags);
+    }).pipe(reportThreadErrors),
+  ),
+);
+
 const threadListCommand = Command.make("list", {
   ...projectLocationFlags,
   project: Flag.String("project").pipe(
@@ -1115,5 +1129,6 @@ export const threadCommand = Command.make("thread").pipe(
     threadStartCommand,
     threadSendCommand,
     threadShowCommand,
+    threadNativeCommand,
   ]),
 );

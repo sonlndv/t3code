@@ -739,11 +739,19 @@ export const make = Effect.gen(function* () {
       // meanwhile. Then keep whichever read saw the later file, so a slower
       // scan never replaces newer usage with older.
       const current = fileCache.get(path);
-      if (
-        current === update.replaces ||
-        current === undefined ||
-        isLaterRead(update.entry, current)
-      ) {
+      // When Pi and OMP share an agent directory, only one parser recognizes each file.
+      // Keep that parser's result for offline history, regardless of scan completion order.
+      const competingParser =
+        current &&
+        current.provider !== provider &&
+        current.size === update.entry.size &&
+        current.mtimeMs === update.entry.mtimeMs;
+      const retainUpdate = competingParser
+        ? records.length + malformedRecords.length > 0
+        : current === update.replaces ||
+          current === undefined ||
+          isLaterRead(update.entry, current);
+      if (retainUpdate) {
         fileCache.set(path, {
           ...update.entry,
           records: correctedBatch(update.entry.records),

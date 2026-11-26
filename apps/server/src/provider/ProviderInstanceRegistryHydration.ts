@@ -11,6 +11,7 @@ import {
 import * as NodeUtil from "node:util";
 
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { resolveCommandPath } from "@t3tools/shared/shell";
 import type * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -127,6 +128,31 @@ export const seedDevReplayInstance = Effect.fn(
   });
 });
 
+const ompDriver = ProviderDriverKind.make("omp");
+
+export const seedInstalledOmp = Effect.fn("ProviderInstanceRegistryHydration.seedInstalledOmp")(
+  function* () {
+    const settings = yield* Settings.ServerSettingsService;
+    const instances = (yield* settings.getSettings).providerInstances;
+    if (
+      ManagedProviders.disallowedDriverReason(settings.managedPolicy, ompDriver) !== undefined ||
+      Object.values(instances).some((instance) => instance.driver === ompDriver) ||
+      (yield* resolveCommandPath("omp")) === null
+    )
+      return;
+    // An existing Local ACP command can already own "omp". Its thread references must not move.
+    let instanceId = defaultInstanceIdForDriver(ompDriver);
+    for (let n = 2; Object.hasOwn(instances, instanceId); n++) {
+      instanceId = ProviderInstanceId.make(`omp_${n}`);
+    }
+    yield* settings.updateProviderInstance({
+      operation: "create",
+      instanceId,
+      instance: { driver: ompDriver, enabled: true },
+    });
+  },
+);
+
 // A label is display-only, so only kind and config can change what a vault returns.
 const vaultConfigs = (settings: ServerSettings) =>
   Object.entries(settings.secretProviders).map(([id, { kind, config }]) => [id, kind, config]);
@@ -181,6 +207,9 @@ export const layer: Layer.Layer<
     const serverSettings = yield* Settings.ServerSettingsService;
     yield* seedDevReplayInstance().pipe(
       Effect.catchCause((cause) => Effect.logWarning("Dev replay agent unavailable", cause)),
+    );
+    yield* seedInstalledOmp().pipe(
+      Effect.catchCause((cause) => Effect.logWarning("OMP detection unavailable", cause)),
     );
     // Subscribe before the seed read so saves during registry construction are queued.
     const settingsChanges = yield* serverSettings.subscribeChanges;

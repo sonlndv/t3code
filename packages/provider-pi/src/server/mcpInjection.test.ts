@@ -15,10 +15,12 @@ import * as NodeFS from "effect/FileSystem";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   buildPiRpcLaunch,
+  materializeOmpMcpExtension,
   materializePiT3McpExtension,
   resolvePiLaunchArgs,
 } from "./mcpInjection.ts";
 import { PI_T3_MCP_EXTENSION_SOURCE } from "./mcpExtensionSource.ts";
+import { OMP_FLAVOR } from "./flavor.ts";
 
 const threadId = ThreadId.make("thread-pi-t3-mcp");
 
@@ -155,6 +157,83 @@ describe("pi T3 MCP injection", () => {
     assert.isTrue(resolvePiLaunchArgs("--provider openrouter --model=deepseek/v4").ok);
     assert.isTrue(resolvePiLaunchArgs("--model deepseek/v4").ok);
   });
+});
+
+describe("OMP native RPC launch", () => {
+  it.each([
+    "--approval-mode=yolo",
+    "--auto-approve",
+    "--yolo",
+    "--resume /other/session.jsonl",
+    "--restore",
+    "--config /project/unsafe.yml",
+    "--mode rpc",
+    "--no-ui",
+    "--model --yolo",
+    "--",
+    "run immediately",
+  ])("rejects user control of the session or permission boundary: %s", (arg) => {
+    assert.isFalse(resolvePiLaunchArgs(arg, OMP_FLAVOR).ok);
+  });
+
+  it.each([
+    ["approval-required", "always-ask"],
+    ["auto", "always-ask"],
+    ["auto-accept-edits", "write"],
+    ["full-access", "yolo"],
+  ] as const)("launches %s with an explicit native policy", (runtimeMode, nativeMode) => {
+    const resolved = resolvePiLaunchArgs("--profile=work --model example/one", OMP_FLAVOR);
+    assert.isTrue(resolved.ok);
+    if (!resolved.ok) return;
+    const launch = buildPiRpcLaunch({
+      flavor: OMP_FLAVOR,
+      runtimeMode,
+      launchArgs: resolved.args,
+      environment: { [T3_PI_RUNTIME_MODE_ENV]: "full-access" },
+      extensionPath: "/private/t3-omp",
+      sessionPath: "/thread/session.jsonl",
+      mcpSession,
+    });
+    assert.deepEqual(launch.args, [
+      "--mode",
+      "rpc-ui",
+      "--resume",
+      "/thread/session.jsonl",
+      "--profile",
+      "work",
+      "--model",
+      "example/one",
+      "--approval-mode",
+      nativeMode,
+      "--config",
+      "/private/t3-omp/config.yml",
+      "--extension",
+      "/private/t3-omp",
+    ]);
+    assert.equal(launch.env[T3_MCP_BEARER_ENV], "secret-pi-token");
+    assert.isUndefined(launch.env[T3_PI_RUNTIME_MODE_ENV]);
+    assert.isUndefined(launch.env[T3_PI_MCP_EXTENSION_PATH_ENV]);
+  });
+
+  it.effect("keeps credentials out of the generated MCP files and starts new threads fresh", () =>
+    Effect.gen(function* () {
+      const fs = yield* NodeFS.FileSystem;
+      const dir = yield* materializeOmpMcpExtension(true);
+      const config = yield* fs.readFileString(`${dir}/.mcp.json`);
+      assert.deepEqual(JSON.parse(config), {
+        mcpServers: {
+          "t3-code": {
+            type: "http",
+            url: "${T3_MCP_URL}",
+            headers: { Authorization: "Bearer ${T3_MCP_BEARER_TOKEN}" },
+          },
+        },
+      });
+      const withoutMcp = yield* materializeOmpMcpExtension(false);
+      assert.isFalse(yield* fs.exists(`${withoutMcp}/.mcp.json`));
+      assert.include(yield* fs.readFileString(`${withoutMcp}/config.yml`), "autoResume: false");
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
 });
 
 describe("materializePiT3McpExtension", () => {

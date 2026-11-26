@@ -2,6 +2,8 @@ import { mFallback, msg } from "gt-i18n";
 import type { MFunctionType } from "gt-i18n/types";
 import {
   ORCHESTRATION_V2_WS_METHODS,
+  linkOriginIsFenced,
+  resolveProjectProviderInstanceEnabled,
   type EnvironmentId,
   type ExecutionEnvironmentDescriptor,
   type OrchestrationV2ShellSnapshot,
@@ -47,6 +49,26 @@ import {
 } from "./shellReducer.ts";
 import { type EnvironmentCatalogState, enabledEnvironmentIds } from "./connections.ts";
 import { followStreamInEnvironment } from "./runtime.ts";
+import type { EnvironmentThreadShell } from "./models.ts";
+
+export function canOpenNativeOmpTerminal(
+  config: Pick<ServerConfig, "featureFlags" | "environment" | "settings"> | null | undefined,
+  thread: EnvironmentThreadShell | null | undefined,
+): boolean {
+  if (!thread || !config || config.featureFlags?.nativeOmpTerminal !== true) return false;
+  const instance = thread.providerInstanceId;
+  return (
+    thread.environmentId === config.environment.environmentId &&
+    thread.archivedAt !== null &&
+    thread.deletedAt === null &&
+    thread.activeProviderThreadId !== null &&
+    thread.modelSelection.instanceId === instance &&
+    thread.interactionMode === "default" &&
+    (!thread.linkOrigin || !linkOriginIsFenced(thread.linkOrigin)) &&
+    config.settings.providerInstances[instance]?.driver === "omp" &&
+    resolveProjectProviderInstanceEnabled(config.settings, thread.projectId, instance)
+  );
+}
 
 export type EnvironmentShellStatus = "empty" | "cached" | "synchronizing" | "live";
 

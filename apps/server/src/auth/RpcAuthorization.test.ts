@@ -13,6 +13,7 @@ import {
   IssueTrackerKind,
   SecretProviderId,
   ThreadId,
+  NATIVE_OMP_TERMINAL_ID,
   TurnItemId,
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
@@ -165,6 +166,37 @@ describe("RPC scope middleware", () => {
     }),
   );
 });
+
+it.effect(
+  "requires orchestration permission to operate native OMP even without the launch field",
+  () =>
+    Effect.gen(function* () {
+      const group = WsRpcGroup.omit(
+        ...[...WsRpcGroup.requests.keys()].filter(
+          (
+            tag,
+          ): tag is Exclude<keyof typeof RPC_REQUIRED_SCOPES, typeof WS_METHODS.terminalWrite> =>
+            tag !== WS_METHODS.terminalWrite,
+        ),
+      );
+      const writes: string[] = [];
+      const handlers = group.toLayerHandler(WS_METHODS.terminalWrite, ({ data }) =>
+        Effect.sync(() => {
+          writes.push(data);
+        }),
+      );
+      const client = yield* RpcTest.makeClient(group).pipe(
+        Effect.provide(Layer.merge(handlers, RpcAuthorization.layer([AuthTerminalOperateScope]))),
+      );
+      const input = { threadId: "thread", terminalId: NATIVE_OMP_TERMINAL_ID, data: "go" };
+      expect(yield* client[WS_METHODS.terminalWrite](input).pipe(Effect.flip)).toMatchObject({
+        _tag: "EnvironmentAuthorizationError",
+        requiredPermission: AuthOrchestrationOperateScope,
+      });
+      yield* client[WS_METHODS.terminalWrite]({ ...input, terminalId: "shell", data: "ok" });
+      expect(writes).toEqual(["ok"]);
+    }).pipe(Effect.scoped),
+);
 
 it.effect("allows issue reads but requires a source-control grant before commenting", () =>
   Effect.gen(function* () {

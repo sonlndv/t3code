@@ -10,6 +10,26 @@ export const T3_PI_RUNTIME_MODE_ENV = "T3_PI_RUNTIME_MODE";
 export const T3_PI_MCP_EXTENSION_PATH_ENV = "T3_PI_MCP_EXTENSION_PATH";
 export const PI_T3_SERVICE_TIER_COMMAND = "t3-service-tier";
 
+// OMP discovers an explicit extension directory's MCP configuration itself.
+// The descriptor is shareable; only the child environment holds a thread's credentials.
+export const OMP_T3_MCP_CONFIG = JSON.stringify({
+  mcpServers: {
+    "t3-code": {
+      type: "http",
+      url: `\${${T3_MCP_URL_ENV}}`,
+      headers: { Authorization: `Bearer \${${T3_MCP_BEARER_ENV}}` },
+    },
+  },
+});
+
+export const OMP_T3_EXTENSION_SOURCE = `
+export default function register(pi) {
+  pi.on("before_agent_start", (event) => ({
+    systemPrompt: [...event.systemPrompt, ${JSON.stringify(`${T3_CODE_ORCHESTRATION_INSTRUCTIONS.trim()}\n\n${PULL_REQUEST_LINKING_INSTRUCTIONS}`)}],
+  }));
+}
+`;
+
 // These tools trigger file-change approvals, bypassed by Auto-accept edits.
 export const PI_FILE_CHANGE_TOOLS = ["edit", "write"] as const;
 

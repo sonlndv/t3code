@@ -10,9 +10,12 @@ import {
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { it as effectIt } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import { describe, expect, it } from "vite-plus/test";
@@ -28,6 +31,7 @@ import {
   layerSettingsWatcher,
   providerHostLayer,
   seedDevReplayInstance,
+  seedInstalledOmp,
 } from "./ProviderInstanceRegistryHydration.ts";
 import * as ProviderHostLive from "./ProviderHostLive.ts";
 import { ProviderInstanceRegistryMutator } from "./ProviderInstanceRegistryMutator.ts";
@@ -104,6 +108,52 @@ describe("deriveProviderInstanceConfigMap", () => {
 
     expect(merged[instanceId]).toBe(settings.providerInstances[instanceId]);
   });
+});
+
+describe("seedInstalledOmp", () => {
+  effectIt.effect(
+    "enables a newly discovered executable without replacing ACP or undoing a disable",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const bin = yield* fs.makeTempDirectoryScoped();
+        const missing = yield* fs.makeTempDirectoryScoped();
+        const command = path.join(bin, (yield* HostProcess.isWindows) ? "omp.exe" : "omp");
+        yield* fs.writeFileString(command, "");
+        yield* fs.chmod(command, 0o755);
+        const settings = yield* ServerSettingsService;
+        const acp = ProviderInstanceId.make("omp");
+        const omp = ProviderInstanceId.make("omp_2");
+        const existing = {
+          driver: ProviderDriverKind.make("acpRegistry"),
+          config: { source: "local", commandPath: "omp", commandArgs: ["acp"] },
+        };
+        yield* settings.updateProviderInstance({
+          operation: "upsert",
+          instanceId: acp,
+          instance: existing,
+        });
+        const seed = (dir: string) =>
+          seedInstalledOmp().pipe(Effect.provideService(HostProcess.Environment, { PATH: dir }));
+        yield* seed(missing);
+        expect((yield* settings.getSettings).providerInstances[omp]).toBeUndefined();
+        yield* seed(bin);
+        const detected = (yield* settings.getSettings).providerInstances;
+        expect(detected[omp]).toMatchObject({ driver: "omp", enabled: true });
+        expect(detected[acp]).toMatchObject(existing);
+        yield* settings.updateProviderInstance({
+          operation: "upsert",
+          instanceId: omp,
+          instance: { driver: ProviderDriverKind.make("omp"), enabled: false },
+        });
+        yield* seed(bin);
+        expect((yield* settings.getSettings).providerInstances[omp]?.enabled).toBe(false);
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest())),
+      ),
+  );
 });
 
 describe("seedDevReplayInstance", () => {

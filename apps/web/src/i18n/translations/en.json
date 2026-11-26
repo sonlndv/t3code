@@ -7578,6 +7578,7 @@
   "ea24f015d73520fd": "Delete",
   "d6b75f6c2f576a2c": "Delete {title}",
   "41935b6ab025a13d": "Archived thread action failed",
+  "7090e4508e0d478c": "Quit OMP, then unarchive this thread to continue in chat.",
   "4568f63340b7a586": "Loading archived threads",
   "3ce9741f164fb944": "Could not load archived threads",
   "ad25ae072f65b934": "No archived threads",

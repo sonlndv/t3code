@@ -11,6 +11,7 @@ import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
 import { makePiTextGeneration } from "./textGeneration.ts";
+import { OMP_FLAVOR, PI_FLAVOR } from "./flavor.ts";
 
 const decodeJsonLine = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 const encodeJsonLine = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
@@ -29,7 +30,7 @@ const makeFakePi = (
     const emit = (record: Record<string, unknown>) =>
       Queue.offer(stdout, new TextEncoder().encode(`${encodeJsonLine(record)}\n`));
     let buffered = "";
-    const onStdin = (chunk: Uint8Array) =>
+    const onStdin = (chunk: Uint8Array, settledEvent: string) =>
       Effect.gen(function* () {
         buffered += new TextDecoder().decode(chunk);
         const lines = buffered.split("\n");
@@ -41,7 +42,7 @@ const makeFakePi = (
           if (record["type"] === "prompt") {
             yield* emit({ ...response, success: true });
             for (const event of turnEvents) yield* emit(event);
-            yield* emit({ type: "agent_settled" });
+            yield* emit({ type: settledEvent });
           } else if (record["type"] === "get_last_assistant_text") {
             yield* emit({ ...response, success: true, data: { text: reply } });
           } else if (record["type"] === "get_available_models" && models !== undefined) {
@@ -58,18 +59,35 @@ const makeFakePi = (
     const spawner = ChildProcessSpawner.make((command) => {
       const versionProbe =
         ChildProcess.isStandardCommand(command) && command.args.includes("--version");
+      const helpProbe = ChildProcess.isStandardCommand(command) && command.args.includes("--help");
       return Effect.succeed(
         ChildProcessSpawner.makeHandle({
           // Outside the valid pid range, so PiRpc's process-group kill never lands.
           pid: ChildProcessSpawner.ProcessId(999_999_999),
-          exitCode: versionProbe ? Effect.succeed(ChildProcessSpawner.ExitCode(0)) : Effect.never,
+          exitCode:
+            versionProbe || helpProbe
+              ? Effect.succeed(ChildProcessSpawner.ExitCode(0))
+              : Effect.never,
           isRunning: Effect.succeed(true),
           kill: () => Effect.void,
           unref: Effect.succeed(Effect.void),
-          stdin: Sink.forEach(onStdin),
+          stdin: Sink.forEach((chunk: Uint8Array) =>
+            onStdin(
+              chunk,
+              ChildProcess.isStandardCommand(command) && command.command === "omp"
+                ? "session_settled"
+                : "agent_settled",
+            ),
+          ),
           stdout: versionProbe
             ? Stream.make(new TextEncoder().encode(version))
-            : Stream.fromQueue(stdout),
+            : helpProbe
+              ? Stream.make(
+                  new TextEncoder().encode(
+                    "--approval-mode always-ask rpc-ui --no-extensions --no-tools --config",
+                  ),
+                )
+              : Stream.fromQueue(stdout),
           stderr: Stream.empty,
           all: Stream.empty,
           getInputFd: () => Sink.drain,
@@ -80,33 +98,57 @@ const makeFakePi = (
     return { spawner, received };
   });
 
-it.effect("runs Pi offline, since the process is stopped as soon as it answers", () =>
-  Effect.gen(function* () {
-    const pi = yield* makeFakePi(JSON.stringify({ subject: "Update README", body: "" }));
-    const launches: Array<ReadonlyArray<string>> = [];
-    const spawner = ChildProcessSpawner.make((command) => {
-      if (ChildProcess.isStandardCommand(command)) launches.push(command.args.map(String));
-      return pi.spawner.spawn(command);
-    });
-    const textGeneration = yield* makePiTextGeneration(
-      { enabled: true, binaryPath: "pi", launchArgs: "", customModels: [] },
-      {},
-    ).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner));
+it.effect.each([PI_FLAVOR, OMP_FLAVOR])(
+  "runs $displayName text generation without tools or extensions",
+  (flavor) =>
+    Effect.gen(function* () {
+      const pi = yield* makeFakePi(JSON.stringify({ subject: "Update README", body: "" }));
+      const launches: Array<ReadonlyArray<string>> = [];
+      const spawner = ChildProcessSpawner.make((command) => {
+        if (ChildProcess.isStandardCommand(command)) launches.push(command.args.map(String));
+        return pi.spawner.spawn(command);
+      });
+      const textGeneration = yield* makePiTextGeneration(
+        {
+          enabled: true,
+          binaryPath: flavor.binaryName,
+          launchArgs: "-e user.js --tools write",
+          customModels: [],
+        },
+        {},
+        undefined,
+        flavor,
+      ).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner));
 
-    const result = yield* textGeneration.generateCommitMessage({
-      cwd: process.cwd(),
-      branch: "main",
-      stagedSummary: "M README.md",
-      stagedPatch: "diff --git a/README.md b/README.md",
-      modelSelection: createModelSelection(ProviderInstanceId.make("pi"), "default"),
-    });
+      const result = yield* textGeneration.generateCommitMessage({
+        cwd: process.cwd(),
+        branch: "main",
+        stagedSummary: "M README.md",
+        stagedPatch: "diff --git a/README.md b/README.md",
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make(flavor.binaryName),
+          "default",
+          [{ id: "thinking", value: "auto" }],
+        ),
+      });
 
-    assert.equal(result.subject, "Update README");
-    assert.deepEqual(
-      launches.map((args) => args.filter((arg) => arg === "--offline")),
-      [["--offline"]],
-    );
-  }),
+      assert.equal(result.subject, "Update README");
+      assert.deepEqual(
+        pi.received
+          .filter((record) => record["type"] === "set_thinking_level")
+          .map((record) => record["level"]),
+        flavor.binaryName === "omp" ? ["auto"] : [],
+      );
+      const sessions = launches.filter((args) => args.includes("--mode"));
+      assert.lengthOf(sessions, 1);
+      assert.includeMembers([...sessions[0]!], ["--no-session", "--no-tools", "--no-extensions"]);
+      assert.notInclude(sessions[0]!, "write");
+      assert.notInclude(sessions[0]!, "user.js");
+      assert.deepEqual(
+        sessions.map((args) => args.filter((arg) => arg === "--offline")),
+        [["--offline"]],
+      );
+    }),
 );
 
 it.effect("names the model and the disabled extensions when Pi cannot load it", () =>
