@@ -87,9 +87,10 @@ export function createTerminalEnvironmentAtoms<R, E>(
       label: "environment-data:terminal:observe",
       subscribe: (input: EnvironmentRpcInput<typeof WS_METHODS.terminalObserve>) =>
         Stream.suspend(() =>
-          subscribe(WS_METHODS.terminalObserve, input).pipe(
-            Stream.scan(nextTerminalAttachSeedState, applyTerminalAttachStreamEvent),
-          ),
+          subscribe(WS_METHODS.terminalObserve, {
+            ...input,
+            supportsSnapshotSequenceState: true,
+          }).pipe(Stream.scan(nextTerminalAttachSeedState, applyTerminalAttachStreamEvent)),
         ),
     }),
     attach: createEnvironmentSubscriptionAtomFamily(runtime, {
@@ -99,11 +100,14 @@ export function createTerminalEnvironmentAtoms<R, E>(
       subscribe: (input: EnvironmentRpcInput<typeof WS_METHODS.terminalAttach>) => {
         // Retry an unanswered first attach unchanged so it can still open the shell.
         let replied = false;
-        return subscribeTerminal(() => ({
-          ...input,
-          ...(replied ? { resume: true } : {}),
-          maxHistoryBytes: DEFAULT_MAX_TERMINAL_BUFFER_BYTES,
-        })).pipe(
+        return subscribeDynamic(WS_METHODS.terminalAttach, () =>
+          Effect.sync(() => ({
+            ...input,
+            ...(replied ? { resume: true } : {}),
+            maxHistoryBytes: DEFAULT_MAX_TERMINAL_BUFFER_BYTES,
+            supportsSnapshotSequenceState: true,
+          })),
+        ).pipe(
           Stream.onFirst(() =>
             Effect.sync(() => {
               replied = true;
