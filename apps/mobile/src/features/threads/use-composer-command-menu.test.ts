@@ -88,6 +88,24 @@ describe("mobile slash commands", () => {
     ).toEqual({ text: "/plan ", cursor: 6 });
   });
 
+  it.each([
+    [undefined, "$review "],
+    ["/skill:review", "/skill:review "],
+  ] as const)("inserts the provider's skill invocation into the draft", (invocationText, text) => {
+    const result = resolveComposerCommandSelection({
+      draftMessage: "$rev",
+      trigger: { rangeStart: 0, rangeEnd: 4 },
+      item: {
+        id: "skill:review",
+        type: "skill",
+        label: "review",
+        description: "",
+        skill: { name: "review", path: "/skills/review", enabled: true, invocationText },
+      },
+    });
+    expect(result).toEqual({ text, cursor: text.length });
+  });
+
   it("offers T3's /clear in place of the provider's, only at the message start", () => {
     const claude = {
       driver: ProviderDriverKind.make("claudeAgent"),

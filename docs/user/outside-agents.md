@@ -53,3 +53,4 @@ t3 thread list
 
 - Pass `--worktree <base-branch>`, `--title` / `--generate-title`, `--provider <id> --model <slug>`, `--option id=value` (e.g. `reasoningEffort=high` for Codex, `effort=high` for Claude), or `-` to read the prompt from stdin.
 - `--wait` prints the reply and exits `1` on failure/stop or `2` when waiting for user input. Add `--json` for structured output including the thread ID.
+- For an archived OMP thread, use [`t3 thread native <thread-id>`](./providers-pi.md#use-omps-own-interface-in-the-same-conversation) to continue in OMP's own interface.

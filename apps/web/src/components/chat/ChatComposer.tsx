@@ -2163,7 +2163,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       return;
     }
     if (item.type === "skill") {
-      const replacement = `$${item.skill.name} `;
+      const replacement = `${item.skill.invocationText ?? `$${item.skill.name}`} `;
       const replacementRangeEnd = extendReplacementRangeForTrailingSpace(
         snapshot.value,
         trigger.rangeEnd,

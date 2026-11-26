@@ -5,6 +5,7 @@ import { assert, it } from "@effect/vitest";
 import {
   DEFAULT_MAX_TERMINAL_BUFFER_BYTES,
   DEFAULT_TERMINAL_ID,
+  NATIVE_OMP_TERMINAL_ID,
   TERMINAL_BRACKETED_PASTE_START,
   TERMINAL_BRACKETED_PASTE_END,
   type TerminalWriteInput,

@@ -9,6 +9,8 @@ T3 Code negotiates ACP v2 preview when supported and falls back to ACP v1 automa
 - **From the ACP Registry**: Open **Settings → Providers → Add provider → Show more**, search for an agent compatible with your server, click **Add**, and complete sign-in. Registry agents are third-party code—review an agent's source and license before adding it.
 - **Local ACP command**: Under **Show more → Local ACP command**, enter the executable path/name, literal arguments (one per row—no shell expansion; e.g., `dsh` with `--profile` and `acp`), and a display name.
 
+Existing `omp acp` threads can keep their local command. For native OMP workers and the terminal interface, choose the [built-in OMP provider](./providers-pi.md#oh-my-pi-omp) for new threads.
+
 ## Installation and updates
 
 Registry agents run on your T3 Code server (including when accessed remotely) and install under `<t3-home>/tools/<agent-id>/<version>/` with SHA-256 verification when provided. T3 Code checks for Registry updates in the background and installs them on the next provider refresh. Set **Executable override** to use your own local binary instead.

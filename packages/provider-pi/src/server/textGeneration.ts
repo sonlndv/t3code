@@ -198,7 +198,7 @@ export const makePiTextGeneration = Effect.fn("makePiTextGeneration")(function* 
       if (!text) {
         return yield* new TextGenerationError({
           operation,
-          detail: "Pi returned empty output.",
+          detail: `${displayName} returned empty output.`,
         });
       }
       return yield* TextGenerationOperations.decodeJsonReply(request, displayName, text);

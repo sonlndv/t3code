@@ -1604,7 +1604,24 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
             return;
           }
         }
-        const output = piToolOutput(resultRecord, toolName);
+        // OMP carries the MCP payload in details; older xd:// executions nest it under xdev.inner.
+        const details = recordField(resultRecord, "details");
+        const mcpDetails = devicePath?.startsWith("xd://")
+          ? recordField(recordField(details, "xdev"), "inner")
+          : details;
+        const output =
+          isOmp &&
+          toolName.startsWith("mcp__") &&
+          recordString(mcpDetails, "serverName") === "t3-code"
+            ? piToolOutput(
+                {
+                  content:
+                    recordField(mcpDetails, "rawContent") ?? recordField(resultRecord, "content"),
+                  structuredContent: recordField(mcpDetails, "structuredContent"),
+                },
+                toolName,
+              )
+            : piToolOutput(resultRecord, toolName);
         // Pi strips @ only at the start of the raw argument, before preview trimming.
         const readPath =
           toolName === "read"

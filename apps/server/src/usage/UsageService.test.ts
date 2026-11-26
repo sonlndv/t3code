@@ -1043,9 +1043,10 @@ describe("UsageService", () => {
 
   it.effect("retains distinct Pi and OMP usage after shared-directory transcripts disappear", () =>
     Effect.gen(function* () {
-      const { home, settings } = yield* setup;
+      const { home, settings, transcript } = yield* setup;
       const dir = NodePath.join(home, "pi", "sessions", "project");
       yield* Effect.promise(() => NodeFSP.mkdir(dir, { recursive: true }));
+      yield* Effect.promise(() => NodeFSP.writeFile(transcript, claudeLine(1, 5)));
       for (const driver of ["pi", "omp"]) {
         const lines = [
           ...(driver === "omp" ? [{ type: "title", v: 1, title: "" }] : []),
@@ -1072,14 +1073,32 @@ describe("UsageService", () => {
       }
       yield* Effect.gen(function* () {
         const service = yield* UsageService.make;
-        const totals = Effect.map(service.readSummary(WINDOW), (summary) =>
+        const totals = (summary: UsageSummary) =>
           Object.fromEntries(
             summary.buckets.map((bucket) => [bucket.provider, totalTokens(bucket.totals)]),
-          ),
+          );
+        assert.deepStrictEqual(totals(yield* service.readSummary(WINDOW)), {
+          claude: 15,
+          pi: 7,
+          omp: 41,
+        });
+        yield* Effect.promise(() => NodeFSP.appendFile(transcript, claudeLine(2, 7)));
+        const saved = yield* service.readSummary({ ...WINDOW, provisional: true });
+        assert.deepStrictEqual(totals(saved), { claude: 15, pi: 7, omp: 41 });
+        assert.isTrue(
+          saved.sources.find((source) => source.fingerprint.provider === "claude")?.refreshing,
         );
-        assert.deepStrictEqual(yield* totals, { pi: 7, omp: 41 });
+        for (const source of saved.sources) {
+          if (source.fingerprint.provider === "pi" || source.fingerprint.provider === "omp") {
+            assert.isUndefined(source.refreshing);
+          }
+        }
         yield* Effect.promise(() => NodeFSP.rm(dir, { recursive: true }));
-        assert.deepStrictEqual(yield* totals, { pi: 7, omp: 41 });
+        assert.deepStrictEqual(totals(yield* service.readSummary(WINDOW)), {
+          claude: 32,
+          pi: 7,
+          omp: 41,
+        });
       }).pipe(Effect.provide(layerService({ prefix: "usage-shared-pi-omp", home, settings })));
     }),
   );

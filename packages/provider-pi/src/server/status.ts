@@ -195,19 +195,21 @@ const makePiDiscoveryConnection = Effect.fnUntraced(function* (
   launchArgs: ReadonlyArray<string>,
   cwd?: string,
   textGenerationLaunch = false,
+  flavor: PiFlavor = PI_FLAVOR,
 ) {
   const launch = buildPiRpcLaunch({
+    flavor,
     launchArgs,
     environment,
     mcpSession: undefined,
     extensionPath: undefined,
     ephemeral: true,
-    disableExtensions: textGenerationLaunch,
-    disableTools: textGenerationLaunch,
+    disableExtensions: textGenerationLaunch || flavor.binaryName === "omp",
+    disableTools: textGenerationLaunch || flavor.binaryName === "omp",
     shortLived: true,
   });
   const connection = yield* makePiRpcConnection({
-    command: piSettings.binaryPath || "pi",
+    command: piSettings.binaryPath || flavor.binaryName,
     args: launch.args,
     cwd,
     env: launch.env,
@@ -350,8 +352,13 @@ const discoverPiViaRpc = Effect.fn("PiProviderStatus.discoverPiViaRpc")(function
 }, Effect.scoped);
 
 export const discoverPiCommandsForCwd = Effect.fn("discoverPiCommandsForCwd")(
-  function* (piSettings: PiSettings, environment: NodeJS.ProcessEnv, cwd: string) {
-    const launchArgs = resolvePiLaunchArgs(piSettings.launchArgs);
+  function* (
+    piSettings: PiSettings,
+    environment: NodeJS.ProcessEnv,
+    cwd: string,
+    flavor: PiFlavor = PI_FLAVOR,
+  ) {
+    const launchArgs = resolvePiLaunchArgs(piSettings.launchArgs, flavor);
     if (!launchArgs.ok) {
       return yield* new PiRpcError({ operation: "launch", detail: launchArgs.message });
     }
@@ -360,18 +367,30 @@ export const discoverPiCommandsForCwd = Effect.fn("discoverPiCommandsForCwd")(
       providerProbeEnvironment(environment),
       launchArgs.args,
       cwd,
+      false,
+      flavor,
     );
     // A failed read must not replace a previously usable workspace catalog with an empty one.
+    const isOmp = flavor.binaryName === "omp";
+    const operation = isOmp ? "get_available_commands" : "get_commands";
     const commandsData = yield* connection.request(
-      { type: "get_commands" },
-      resolveProviderProbeTimeoutMs("pi", PI_RPC_DISCOVERY_TIMEOUT_MS, environment),
+      { type: operation },
+      resolveProviderProbeTimeoutMs(flavor.driverKind, PI_RPC_DISCOVERY_TIMEOUT_MS, environment),
     );
-    const { slashCommands, skills } = parsePiDiscoveredCommands(commandsData);
-    return { slashCommands: withPiBuiltinSlashCommands(slashCommands), skills };
+    if (!Array.isArray(recordField(commandsData, "commands"))) {
+      return yield* new PiRpcError({ operation, detail: "Invalid workspace command inventory" });
+    }
+    const { slashCommands, skills } = parsePiDiscoveredCommands(commandsData, flavor);
+    // OMP's native menu also lists TUI commands that cannot run in chat.
+    return { slashCommands: withPiBuiltinSlashCommands(isOmp ? [] : slashCommands), skills };
   },
   Effect.scoped,
-  (effect, _settings, environment) => {
-    const timeoutMs = resolveProviderProbeTimeoutMs("pi", PI_RPC_DISCOVERY_TIMEOUT_MS, environment);
+  (effect, _settings, environment, _cwd, flavor = PI_FLAVOR) => {
+    const timeoutMs = resolveProviderProbeTimeoutMs(
+      flavor.driverKind,
+      PI_RPC_DISCOVERY_TIMEOUT_MS,
+      environment,
+    );
     return effect.pipe(
       Effect.timeoutOrElse({
         duration: timeoutMs,

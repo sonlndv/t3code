@@ -1,3 +1,4 @@
+import { PI_FLAVOR } from "./flavor.ts";
 import { type ServerProviderSkill, type ServerProviderSlashCommand } from "@t3tools/contracts";
 import * as Predicate from "effect/Predicate";
 
@@ -42,7 +43,7 @@ function normalizePiSkillScope(scope: string | undefined): string | undefined {
   return scope;
 }
 
-export function parsePiDiscoveredCommands(data: unknown): PiDiscoveredCommands {
+export function parsePiDiscoveredCommands(data: unknown, flavor = PI_FLAVOR): PiDiscoveredCommands {
   const commands = recordField(data, "commands");
   if (!Array.isArray(commands)) return { slashCommands: [], skills: [] };
   const slashCommands: Array<ServerProviderSlashCommand> = [];
@@ -59,7 +60,9 @@ export function parsePiDiscoveredCommands(data: unknown): PiDiscoveredCommands {
       const sourceInfo = recordField(command, "sourceInfo");
       const commandInterface = recordField(command, "interface");
       const path =
-        recordString(sourceInfo, "path") ?? recordString(command, "path") ?? `pi:skill:${name}`;
+        recordString(sourceInfo, "path") ??
+        recordString(command, "path") ??
+        `${flavor.binaryName}:skill:${name}`;
       const scope = normalizePiSkillScope(
         recordString(sourceInfo, "scope") ?? recordString(command, "location"),
       );
@@ -75,6 +78,7 @@ export function parsePiDiscoveredCommands(data: unknown): PiDiscoveredCommands {
         name,
         path,
         enabled: true,
+        ...(flavor.binaryName === "omp" ? { invocationText: `/skill:${name}` } : {}),
         ...(description === undefined ? {} : { description }),
         ...(scope === undefined ? {} : { scope }),
         ...(displayName === undefined ? {} : { displayName }),

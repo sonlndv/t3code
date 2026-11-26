@@ -29,6 +29,7 @@ import {
   AuthFilesystemReadScope,
   AuthOrchestrationOperateScope,
   AuthTerminalOperateScope,
+  NATIVE_OMP_TERMINAL_ID,
   TerminalProcessChangedError,
   type TerminalWriteInput,
   type ContextMenuItem,

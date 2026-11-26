@@ -2,6 +2,22 @@
 
 Run your existing [Pi](https://pi.dev) (**0.84.3+**, Node.js **22.19+**) installation in T3 Code while keeping Pi's models, auth, extensions, skills, and native session history.
 
+## Oh My Pi (OMP)
+
+Install `omp` on the T3 server and sign in with `omp login`. Choose **OMP** in the model picker for a new thread. If OMP isn't listed, enable it in **Settings → Providers** and check the binary path.
+
+Choose a skill with `$` or type `/skill:<name>`. To delegate to OMP workers, ask OMP to use its native `task` tool. OMP uses its own model and role settings. Switching to a different T3 provider doesn't move running workers.
+
+### Use OMP's own interface in the same conversation
+
+1. Finish the current turn and background work, then archive the thread. Archiving closes its T3 terminals.
+2. In **Settings → Archive**, choose **Open OMP**. Use `/model`, extension menus, and keyboard shortcuts as you would in a terminal. On the server machine, `t3 thread native <thread-id>` opens the same interface.
+3. Quit OMP, then unarchive the thread to continue in chat.
+
+Both interfaces use the same saved OMP conversation. Terminal-only turns stay in native history. Starting another session inside OMP does not redirect the T3 thread.
+
+Native OMP uses its own permissions. Use T3 chat for managed environments, restricted linked threads, plan mode, or instances that rely on secrets stored by T3.
+
 ## Set up Pi
 
 1. Install Pi on the server machine (via Pi's installer or `npm install -g --ignore-scripts @earendil-works/pi-coding-agent`).

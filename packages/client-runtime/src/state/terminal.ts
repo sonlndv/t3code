@@ -100,14 +100,12 @@ export function createTerminalEnvironmentAtoms<R, E>(
       subscribe: (input: EnvironmentRpcInput<typeof WS_METHODS.terminalAttach>) => {
         // Retry an unanswered first attach unchanged so it can still open the shell.
         let replied = false;
-        return subscribeDynamic(WS_METHODS.terminalAttach, () =>
-          Effect.sync(() => ({
-            ...input,
-            ...(replied ? { resume: true } : {}),
-            maxHistoryBytes: DEFAULT_MAX_TERMINAL_BUFFER_BYTES,
-            supportsSnapshotSequenceState: true,
-          })),
-        ).pipe(
+        return subscribeTerminal(() => ({
+          ...input,
+          ...(replied ? { resume: true } : {}),
+          maxHistoryBytes: DEFAULT_MAX_TERMINAL_BUFFER_BYTES,
+          supportsSnapshotSequenceState: true,
+        })).pipe(
           Stream.onFirst(() =>
             Effect.sync(() => {
               replied = true;

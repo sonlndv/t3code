@@ -65,56 +65,29 @@ const withInstanceIdentity =
     continuation: { groupKey: input.continuationGroupKey },
   });
 
-export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv, Path.Path> = {
-  driverKind: DRIVER_KIND,
-  metadata: {
-    displayName: "Pi",
-    supportsMultipleInstances: true,
-  },
-  usage: piUsageReader,
-  configSchema: PiSettings,
-  defaultConfig: (): PiSettings => decodePiSettings({}),
-  create: Effect.fn("PiDriver.create")(function* ({
-    instanceId,
-    displayName,
-    accentColor,
-    environment,
-    enabled,
-    config,
-  }) {
-    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-    const fileSystem = yield* FileSystem.FileSystem;
-    const pathService = yield* Path.Path;
-    const httpClient = yield* HttpClient.HttpClient;
-    const latestVersions = yield* ProviderLatestVersions.ProviderLatestVersions;
-    const host = yield* ProviderHost.ProviderHost;
-    // Pi runs extensions' session_start in its cwd; the server's cwd is $HOME on packaged desktop.
-    const probeCwd = pathService.join(host.paths.providerStatusCacheDir, "pi-status-probe");
-    const processEnv = yield* mergeProviderInstanceEnvironment(environment);
-    const continuationIdentity = defaultProviderContinuationIdentity({
-      driverKind: DRIVER_KIND,
-      instanceId,
-    });
-    const stampIdentity = withInstanceIdentity({
-      instanceId,
-      displayName,
-      accentColor,
-      continuationGroupKey: continuationIdentity.continuationKey,
-    });
-    const effectiveConfig = { ...config, enabled } satisfies PiSettings;
-    const resolveMaintenance = yield* makeCachedProviderMaintenanceResolution(
-      resolveProviderMaintenanceCapabilitiesEffect(UPDATE, {
-        binaryPath: effectiveConfig.binaryPath,
-        env: processEnv,
-        npmCacheDir: pathService.join(host.paths.providerStatusCacheDir, "npm"),
-      }).pipe(
-        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-        Effect.provideService(FileSystem.FileSystem, fileSystem),
-        Effect.provideService(Path.Path, pathService),
-      ),
-    );
-
-    const orchestrationAdapter = yield* PiAdapterV2Driver.create({
+function createPiDriver(
+  flavor: PiFlavor,
+  configSchema: typeof PiSettings,
+): ProviderDriver<PiSettings, PiDriverEnv, Path.Path | FileSystem.FileSystem> {
+  const decodeSettings = Schema.decodeSync(configSchema);
+  const defaultConfig = () => decodeSettings({});
+  const adapterDriver = createPiAdapterV2Driver({ flavor, configSchema, defaultConfig });
+  const updateResolver = makePackageManagedProviderMaintenanceResolver({
+    provider: flavor.driverKind,
+    npmPackageName: flavor.npmPackageName,
+    mise: { tool: flavor.binaryName === "omp" ? "oh-my-pi" : "pi" },
+    nativeUpdate: flavor.binaryName === "pi" ? { args: ["update", "--self"] } : null,
+  });
+  return {
+    driverKind: flavor.driverKind,
+    metadata: {
+      displayName: flavor.displayName,
+      supportsMultipleInstances: true,
+    },
+    usage: makePiUsageReader(flavor),
+    configSchema,
+    defaultConfig,
+    create: Effect.fn(`${flavor.displayName}Driver.create`)(function* ({
       instanceId,
       displayName,
       accentColor,
@@ -147,6 +120,7 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv, Path.Path> = {
         resolveProviderMaintenanceCapabilitiesEffect(updateResolver, {
           binaryPath: effectiveConfig.binaryPath,
           env: processEnv,
+          npmCacheDir: pathService.join(host.paths.providerStatusCacheDir, "npm"),
         }).pipe(
           Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
           Effect.provideService(FileSystem.FileSystem, fileSystem),
@@ -241,18 +215,18 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv, Path.Path> = {
         enabled,
         snapshot,
         snapshotForCwd: (workspaceCwd) =>
-          !effectiveConfig.enabled || flavor.binaryName === "omp"
+          !effectiveConfig.enabled
             ? snapshot.getSnapshot
             : Effect.all([
                 snapshot.getSnapshot,
-                discoverPiCommandsForCwd(effectiveConfig, processEnv, workspaceCwd).pipe(
+                discoverPiCommandsForCwd(effectiveConfig, processEnv, workspaceCwd, flavor).pipe(
                   Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
                   Effect.mapError(
                     (cause) =>
                       new ProviderDriverError({
                         driver: flavor.driverKind,
                         instanceId,
-                        detail: "Failed to discover Pi workspace commands.",
+                        detail: `Failed to discover ${flavor.displayName} workspace commands.`,
                         cause,
                       }),
                   ),

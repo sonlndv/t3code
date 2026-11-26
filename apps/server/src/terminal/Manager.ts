@@ -7,6 +7,9 @@ import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
 import {
   DEFAULT_TERMINAL_ID,
   DEFAULT_MAX_TERMINAL_BUFFER_BYTES,
+  NATIVE_OMP_TERMINAL_ID,
+  NativeOmpTerminalError,
+  type ThreadId,
   retainTerminalSnapshotHistory,
   TERMINAL_SEQUENCE_GROUND,
   TERMINAL_BRACKETED_PASTE_END,
@@ -3083,15 +3086,17 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       increment(terminalSessionsTotal, { lifecycle: eventType }).pipe(
         Effect.andThen(
           Effect.gen(function* () {
-            const shellCandidates = yield* resolveShellCandidates(
-              shellResolver,
-              platform,
-              baseEnv,
-              session.runtimeEnv?.T3CODE_TERMINAL_SHELL ?? baseEnv.T3CODE_TERMINAL_SHELL,
-            ).pipe(
-              Effect.provideService(FileSystem.FileSystem, fileSystem),
-              withShellPreparationTimeout,
-            );
+            const shellCandidates = nativeCommand
+              ? [nativeCommand]
+              : yield* resolveShellCandidates(
+                  shellResolver,
+                  platform,
+                  baseEnv,
+                  session.runtimeEnv?.T3CODE_TERMINAL_SHELL ?? baseEnv.T3CODE_TERMINAL_SHELL,
+                ).pipe(
+                  Effect.provideService(FileSystem.FileSystem, fileSystem),
+                  withShellPreparationTimeout,
+                );
             const terminalEnv = createTerminalSpawnEnv(
               baseEnv,
               session.runtimeEnv,
@@ -3574,6 +3579,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
               rows,
             },
             "started",
+            nativeCommand,
           ),
         ),
         Effect.uninterruptible,
@@ -3639,19 +3645,59 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     return liveSession;
   });
 
-  const openLocked = (input: TerminalOpenInput, supportsSnapshotSequenceState?: boolean) =>
+  const validateNativeInput = (input: TerminalOpenInput | TerminalAttachInput) =>
+    input.nativeOmpThreadId !== undefined &&
+    (input.threadId !== input.nativeOmpThreadId ||
+      input.terminalId !== NATIVE_OMP_TERMINAL_ID ||
+      input.env !== undefined ||
+      input.providerInstanceId !== undefined ||
+      input.stopOnSettle === true)
+      ? Effect.fail(
+          new NativeOmpTerminalError({
+            detail: "Native OMP requires its own thread and terminal without launch overrides.",
+          }),
+        )
+      : Effect.void;
+
+  const openLocked = (
+    input: TerminalOpenInput,
+    supportsSnapshotSequenceState?: boolean,
+    nativeCommand?: ShellCandidate,
+  ) =>
     withWorkspaceLease(
       path.resolve(input.worktreePath ?? input.cwd),
-      openWithWorkspaceLease(input).pipe(
+      openWithWorkspaceLease(input, nativeCommand).pipe(
         Effect.map((session) => snapshot(session, supportsSnapshotSequenceState)),
       ),
     );
+
+  const openNativeLocked = Effect.fn("terminal.openNativeLocked")(function* (
+    input: TerminalOpenInput | TerminalAttachInput,
+    supportsSnapshotSequenceState?: boolean,
+  ) {
+    if (input.nativeOmpThreadId === undefined || !options.resolveNativeOmpLaunch) {
+      return yield* new NativeOmpTerminalError({ detail: "Open this terminal with native OMP." });
+    }
+    const existing = yield* getSession(input.threadId, input.terminalId);
+    if (Option.isSome(existing) && existing.value.process) {
+      return snapshot(existing.value, supportsSnapshotSequenceState);
+    }
+    const launch = yield* options.resolveNativeOmpLaunch(input.nativeOmpThreadId);
+    return yield* openLocked(
+      { ...input, cwd: launch.cwd, worktreePath: launch.cwd },
+      supportsSnapshotSequenceState,
+      launch.command,
+    ).pipe(Effect.provideService(TerminalCwdRecovery, TerminalCwdRecovery.defaultValue()));
   });
 
   const open: TerminalManager["Service"]["open"] = (input) =>
     withThreadLock(
       input.threadId,
-      validateNativeInput(input).pipe(Effect.andThen(openLocked(input))),
+      Effect.gen(function* () {
+        yield* validateNativeInput(input);
+        if (input.terminalId === NATIVE_OMP_TERMINAL_ID) return yield* openNativeLocked(input);
+        return yield* openLocked(yield* resolveLaunchInputEnvironment(input));
+      }),
     );
 
   const getShell = Effect.fn("terminal.getShell")(function* (input: TerminalObserveInput) {
@@ -3677,6 +3723,11 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       ) {
         return null;
       }
+      if (terminalId === NATIVE_OMP_TERMINAL_ID) {
+        return yield* Effect.uninterruptible(
+          openNativeLocked(input, input.supportsSnapshotSequenceState),
+        );
+      }
       if (!input.cwd) {
         return yield* new TerminalSessionLookupError({
           threadId: input.threadId,
@@ -3698,7 +3749,13 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     const targetCols = input.cols ?? session.cols;
     const targetRows = input.rows ?? session.rows;
 
-    if (!input.resume && !session.process && input.cwd && input.restartIfNotRunning === true) {
+    if (
+      terminalId !== NATIVE_OMP_TERMINAL_ID &&
+      !input.resume &&
+      !session.process &&
+      input.cwd &&
+      input.restartIfNotRunning === true
+    ) {
       const resolvedInput = yield* resolveLaunchInputEnvironment({
         ...input,
         terminalId,

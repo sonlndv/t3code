@@ -12,7 +12,7 @@ import * as Stream from "effect/Stream";
 import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
-import { checkPiProviderStatus } from "./status.ts";
+import { checkPiProviderStatus, discoverPiCommandsForCwd } from "./status.ts";
 import { OMP_FLAVOR } from "./flavor.ts";
 
 const encoder = new TextEncoder();
@@ -70,6 +70,7 @@ const piRpcProcess = (
   inventory: unknown,
   onModelRequest: Effect.Effect<void> = Effect.void,
   state: unknown = {},
+  ompCommands: ReadonlyArray<{ name: string; source: string }> = [],
 ) =>
   Effect.gen(function* () {
     const stdout = yield* Queue.unbounded<Uint8Array, Cause.Done>();
@@ -93,9 +94,11 @@ const piRpcProcess = (
               ? inventory
               : request.type === "get_commands"
                 ? { commands: [] }
-                : request.type === "get_state"
-                  ? state
-                  : {};
+                : request.type === "get_available_commands"
+                  ? { commands: ompCommands }
+                  : request.type === "get_state"
+                    ? state
+                    : {};
           yield* Queue.offer(
             stdout,
             encoder.encode(
@@ -183,6 +186,41 @@ const BROKEN_ADVISORY = {
 } as const;
 
 describe("PiProvider", () => {
+  it.effect(
+    "discovers OMP skill tokens without loading project extensions or advertising TUI commands",
+    () =>
+      Effect.gen(function* () {
+        const spawner = ChildProcessSpawner.make((command) => {
+          if (!ChildProcess.isStandardCommand(command)) return Effect.die("Unexpected pipeline");
+          assert.equal(command.command, "custom-omp");
+          assert.equal(command.options.cwd, "/workspace");
+          assert.includeMembers(
+            [...command.args],
+            ["--no-session", "--no-extensions", "--no-tools"],
+          );
+          assert.notInclude(command.args, "project-extension.js");
+          return piRpcProcess({}, Effect.void, {}, [
+            { name: "skill:release", source: "skill" },
+            { name: "model", source: "builtin" },
+          ]);
+        });
+        const catalog = yield* discoverPiCommandsForCwd(
+          { ...settings, binaryPath: "custom-omp", launchArgs: "-e project-extension.js" },
+          {},
+          "/workspace",
+          OMP_FLAVOR,
+        ).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner));
+        assert.deepEqual(
+          catalog.skills.map((skill) => skill.invocationText),
+          ["/skill:release"],
+        );
+        assert.notInclude(
+          catalog.slashCommands.map((command) => command.name),
+          "model",
+        );
+      }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("reads the OMP catalog without starting a session or loading user extensions", () =>
     Effect.gen(function* () {
       const commands: Array<ReadonlyArray<string>> = [];

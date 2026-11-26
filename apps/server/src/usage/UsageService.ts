@@ -699,6 +699,7 @@ export const make = Effect.gen(function* () {
     /** Every transcript path the walk listed, in walk order, whatever its mtime. */
     readonly walked?: readonly string[];
     readonly refreshing?: true;
+    readonly fromMemory?: true;
   }
 
   const scanTranscriptDir = Effect.fn("UsageService.scanTranscriptDir")(function* (
@@ -712,6 +713,7 @@ export const make = Effect.gen(function* () {
       dir,
       volumeId,
       ...(physicalSourceId === undefined ? {} : { physicalSourceId }),
+      ...(fromMemory ? { fromMemory: true as const } : {}),
     };
     const exists = yield* fileSystem
       .exists(dir)
@@ -827,9 +829,24 @@ export const make = Effect.gen(function* () {
       { concurrency: "unbounded" },
     );
 
+    // The path-keyed cache holds only one parser's result. Walk shared roots for each
+    // parser without forcing unrelated roots out of the provisional cache.
+    const sharedDirs = new Set<string>();
+    if (fromMemory) {
+      const seen = new Set<string>();
+      for (const { dir } of dirs) {
+        if (seen.has(dir)) sharedDirs.add(dir);
+        seen.add(dir);
+      }
+    }
     // Scan independent sources together, directories sequentially to bound open files; keep order, since the first copy decides a duplicate's bucket.
     const [transcripts, scanDirs] = yield* Effect.all(
-      [Effect.forEach(dirs, (dir) => scanTranscriptDir(dir, windowStartMs, fromMemory)), scans],
+      [
+        Effect.forEach(dirs, (source) =>
+          scanTranscriptDir(source, windowStartMs, fromMemory && !sharedDirs.has(source.dir)),
+        ),
+        scans,
+      ],
       { concurrency: "unbounded" },
     );
     const scanned: readonly ScannedDir[] = [...transcripts, ...pending, ...scanDirs.flat()];
@@ -901,11 +918,9 @@ export const make = Effect.gen(function* () {
         Effect.provideContext(readerContext),
       );
       // A window no complete scan has read would show partial totals, so every directory must cover it.
-      // Saved files are keyed by path, so two providers reading one directory keep only one parse.
       const fromMemory =
         provisional &&
         resolved.dirs.length > 0 &&
-        new Set(resolved.dirs.map((source) => source.dir)).size === resolved.dirs.length &&
         resolved.dirs.every(
           (source) => (coveredSince.get(coverageKey(source)) ?? Infinity) <= windowStartMs,
         );
@@ -983,7 +998,7 @@ export const make = Effect.gen(function* () {
     });
     // Usage two transcripts share counts in the first one, so saved files take the order an exact
     // scan reads them in: walked files in walk order, then the directory's deleted files.
-    for (const { provider, dir, walked } of fromMemory ? [] : scannedDirs) {
+    for (const { provider, dir, walked } of scannedDirs) {
       if (walked === undefined) continue;
       const within = withinDir(dir);
       const saved = [...fileCache.keys()];
@@ -1039,10 +1054,11 @@ export const make = Effect.gen(function* () {
 
     let resolvedAny = false;
     for (const { reader } of transcriptReaders) {
-      if (reader.resolveServiceTiers === undefined || fromMemory) continue;
+      if (reader.resolveServiceTiers === undefined) continue;
       const pending = new Set<UsageRecord>();
       for (const [index, files] of filesByDir.entries()) {
-        if (scannedDirs[index]?.provider !== reader.provider) continue;
+        const source = scannedDirs[index];
+        if (source?.provider !== reader.provider || source.fromMemory) continue;
         for (const file of files) {
           for (const raw of file.records) {
             const record = correctedRecord(raw);
@@ -1090,6 +1106,7 @@ export const make = Effect.gen(function* () {
         status,
         message,
         refreshing,
+        fromMemory: savedSource,
         hostId: sourceHostId,
       },
     ] of scannedDirs.entries()) {
@@ -1165,9 +1182,7 @@ export const make = Effect.gen(function* () {
             : sourceMessage,
         // A saved answer misses what changed since its scan, so the client must ask again. An
         // empty source stays unmarked: it would only flash a loading row.
-        ...(refreshing || (fromMemory && counted && transcriptFormats.has(provider))
-          ? { refreshing: true }
-          : {}),
+        ...(refreshing || (savedSource && counted) ? { refreshing: true } : {}),
       });
     }
 

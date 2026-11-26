@@ -237,7 +237,7 @@ export function resolveComposerCommandSelection(input: {
   if (item.type === "path") {
     replacement = `${serializeComposerFileLink(item.path)} `;
   } else if (item.type === "skill") {
-    replacement = `$${item.skill.name} `;
+    replacement = `${item.skill.invocationText ?? `$${item.skill.name}`} `;
   } else if (item.type === "slash-command") {
     replacement = `/${item.command} `;
   } else if (item.type === "provider-slash-command") {

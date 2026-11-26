@@ -126,6 +126,8 @@ export const ServerProviderSkill = Schema.Struct({
   path: TrimmedNonEmptyString,
   scope: Schema.optional(TrimmedNonEmptyString),
   enabled: Schema.Boolean,
+  /** Native prompt token for providers that don't expand T3's `$name` mention. */
+  invocationText: Schema.optional(TrimmedNonEmptyString),
   displayName: Schema.optional(TrimmedNonEmptyString),
   shortDescription: Schema.optional(TrimmedNonEmptyString),
   /** Claude disable-model-invocation: only users can invoke; composers must offer a slash command. */
