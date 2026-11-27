@@ -1,3 +1,4 @@
+import type { MobileRewindTarget } from "./threadRewind";
 import { CollapsibleUserMessageBody } from "./CollapsibleUserMessageBody";
 import { msg, T, useGT, useLocale, useMessages } from "gt-react-native";
 import { m } from "../../i18n/messages";
@@ -382,6 +383,10 @@ export interface ThreadFeedProps {
   readonly toolCallVisibility?: ToolCallVisibility;
   readonly worktreeSetup?: WorktreeSetupCardProps | null;
   readonly preparingWorktree?: boolean;
+  readonly rewindTargets?: ReadonlyMap<MessageId, MobileRewindTarget> | undefined;
+  readonly onRewindMessage?:
+    | ((messageId: MessageId, target: MobileRewindTarget) => void)
+    | undefined;
   readonly queuedMessages: ReadonlyArray<QueuedThreadMessage>;
   readonly dispatchingMessageId: MessageId | null;
   readonly onEditPendingMessage: ((message: QueuedThreadMessage) => void) | null;
@@ -427,6 +432,7 @@ const USER_MESSAGE_COPY_MENU_ACTIONS = [
 ];
 
 function UserMessageCopyButton(props: {
+  readonly onRewind?: (() => void) | undefined;
   readonly text: string;
   readonly onCopy: (() => Promise<void>) | undefined;
   readonly tintColor: ColorValue;
@@ -444,15 +450,28 @@ function UserMessageCopyButton(props: {
     />
   );
   const linkText = replaceComposerContextReferences(props.text, (reference) => reference.label);
-  if (linkText.length > PROMPT_LINK_MAX_PROMPT_LENGTH) return button;
+  const canCopyLink = linkText.length > 0 && linkText.length <= PROMPT_LINK_MAX_PROMPT_LENGTH;
+  if (!canCopyLink && !props.onRewind) return button;
   return (
     <Menu
-      actions={USER_MESSAGE_COPY_MENU_ACTIONS.map((action) => ({
-        ...action,
-        title: m(action.title),
-      }))}
+      actions={[
+        ...(canCopyLink
+          ? USER_MESSAGE_COPY_MENU_ACTIONS.map((action) => ({ ...action, title: m(action.title) }))
+          : []),
+        ...(props.onRewind
+          ? [
+              {
+                id: "rewind",
+                title: gt("Rewind conversation"),
+                image: "arrow.uturn.backward",
+                attributes: { destructive: true },
+              },
+            ]
+          : []),
+      ]}
       onPressAction={({ nativeEvent }) => {
         if (nativeEvent.event === "copy-prompt-link") void copyPromptLink(linkText);
+        if (nativeEvent.event === "rewind") props.onRewind?.();
       }}
       shouldOpenOnLongPress
     >
@@ -1970,6 +1989,8 @@ function renderFeedEntry(
     | "onCiteAssistantText"
     | "skills"
     | "dispatchingMessageId"
+    | "onRewindMessage"
+    | "rewindTargets"
     | "onEditPendingMessage"
     | "threadId"
     | "workspaceRoot"
@@ -2347,6 +2368,16 @@ function renderFeedEntry(
           ? scopeThreadRef(props.environmentId, message.senderThreadId)
           : null);
       const foldExpanded = foldRowId !== null && (props.expandedWorkRows[foldRowId] ?? false);
+      const rewindTarget =
+        message.visibility !== "inherited" &&
+        message.sourceThreadId === props.threadId &&
+        (message.inputIntent === "turn_start" || message.inputIntent === "queued_turn")
+          ? props.rewindTargets?.get(message.id)
+          : undefined;
+      const onRewind =
+        rewindTarget && props.onRewindMessage
+          ? () => props.onRewindMessage?.(message.id, rewindTarget)
+          : undefined;
       const bubbleBodyVisible = foldRowId === null || foldExpanded;
       const intentBadge = props.userMessageGrouping.continuesSteer
         ? null
@@ -2642,8 +2673,20 @@ function renderFeedEntry(
                   <SymbolView name="pencil" size={14} tintColor={iconSubtleColor} />
                 </Pressable>
               ) : null}
+              {presentation.text.trim().length === 0 && onRewind ? (
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={m(msg("Rewind conversation"))}
+                  hitSlop={8}
+                  onPress={onRewind}
+                  className="size-7 items-center justify-center"
+                >
+                  <SymbolView name="arrow.uturn.backward" size={14} tintColor={iconSubtleColor} />
+                </Pressable>
+              ) : null}
               {presentation.text.trim().length > 0 ? (
                 <UserMessageCopyButton
+                  onRewind={onRewind}
                   text={presentation.text}
                   onCopy={
                     message.context && presentation.attribution !== "guest"
@@ -4237,6 +4280,8 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
             setupDetailsOpen,
             onOpenSetupDetails: openSetupDetails,
             onEditPendingMessage: props.onEditPendingMessage,
+            rewindTargets: props.rewindTargets,
+            onRewindMessage: props.onRewindMessage,
             onUseArtifactTemplate: props.onUseArtifactTemplate,
             onCiteAssistantText: props.onCiteAssistantText,
             threadId: props.threadId,

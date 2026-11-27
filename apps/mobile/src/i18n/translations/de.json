@@ -5709,5 +5709,11 @@
   "99451a5d2d40440f": "Zurückgezogen von {by}.",
   "3ee30a50b70fffab": "Zurückgezogen von {by}: {reason}",
   "201490988858b511": "zurückgezogen von {by}",
-  "46d614fa7b4bf1e5": "Workflow-Ausführungen"
+  "46d614fa7b4bf1e5": "Workflow-Ausführungen",
+  "88ddb8c480f0642d": "Thread konnte nicht geöffnet werden",
+  "25239403bba45805": "Im Chat fortfahren",
+  "9ee30026fe8d069b": "Bis vor diese Nachricht zurückkehren?",
+  "b3c431b01e65101f": "Spätere Beiträge werden aus diesem Chat entfernt. Deine Dateien bleiben erhalten.",
+  "22b3c49b2a434be2": "Unterhaltung zurücksetzen",
+  "6c564f3a631a0ee7": "Der Thread hat sich geändert. Wähle erneut eine Nachricht aus."
 }

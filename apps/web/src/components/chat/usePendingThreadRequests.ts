@@ -263,7 +263,9 @@ function makePendingCustomAnswerSetter(input: {
         ...existing[activePendingRequestKey],
         [questionId]: setPendingUserInputCustomAnswer(
           question,
-          existing[activePendingRequestKey]?.[questionId],
+          seedUserInputDraftAnswers([question], existing[activePendingRequestKey] ?? {})[
+            questionId
+          ],
           value,
         ),
       },
@@ -582,7 +584,9 @@ export function usePendingThreadRequests(input: {
           ...existing[activePendingRequestKey],
           [questionId]: togglePendingUserInputOptionSelection(
             question,
-            existing[activePendingRequestKey]?.[questionId],
+            seedUserInputDraftAnswers([question], existing[activePendingRequestKey] ?? {})[
+              questionId
+            ],
             optionValue,
           ),
         },

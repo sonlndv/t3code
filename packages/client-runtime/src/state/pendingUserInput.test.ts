@@ -32,6 +32,16 @@ const nativeChoiceQuestion = {
 } as const;
 
 describe("resolvePendingUserInputAnswer", () => {
+  it("requires entered text for a required prefilled form field and permits empty optional choices", () => {
+    const field = { id: "field", options: [], required: true, initialAnswer: "" };
+    expect(resolvePendingUserInputAnswer(field, { customAnswer: "" })).toBeNull();
+    expect(resolvePendingUserInputAnswer(field, { customAnswer: "  " })).toBeNull();
+    expect(resolvePendingUserInputAnswer(field, { customAnswer: " answer " })).toBe(" answer ");
+    expect(
+      resolvePendingUserInputAnswer({ ...singleSelectQuestion, required: false }, undefined),
+    ).toEqual([]);
+  });
+
   it("preserves exact editor text, including a deliberately cleared answer", () => {
     const question = { ...singleSelectQuestion, initialAnswer: "  Proposed message\n" };
     expect(resolvePendingUserInputAnswer(question, { customAnswer: question.initialAnswer })).toBe(

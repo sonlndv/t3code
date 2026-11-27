@@ -5709,5 +5709,11 @@
   "99451a5d2d40440f": "Återkallad av {by}.",
   "3ee30a50b70fffab": "Återkallad av {by}: {reason}",
   "201490988858b511": "återkallad av {by}",
-  "46d614fa7b4bf1e5": "Arbetsflödeskörningar"
+  "46d614fa7b4bf1e5": "Arbetsflödeskörningar",
+  "88ddb8c480f0642d": "Kunde inte öppna tråden",
+  "25239403bba45805": "Fortsätt i chatten",
+  "9ee30026fe8d069b": "Gå tillbaka till före det här meddelandet?",
+  "b3c431b01e65101f": "Senare inlägg tas bort från chatten. Dina filer behålls.",
+  "22b3c49b2a434be2": "Spola tillbaka konversationen",
+  "6c564f3a631a0ee7": "Tråden har ändrats. Välj ett meddelande igen för att gå tillbaka."
 }

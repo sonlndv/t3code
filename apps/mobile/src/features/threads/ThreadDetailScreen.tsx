@@ -9,6 +9,8 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import { AsyncResult, Atom } from "effect/reactivity";
+import { mobileRewindTargets, type MobileRewindTarget } from "./threadRewind";
+import { readEnvironmentScope } from "../../state/session";
 import * as Dialog from "../../components/ui/Dialog";
 import { useAtomMount, useAtomValue } from "@effect/atom-react";
 import { mobilePreferencesAtom } from "../../state/preferences";
@@ -248,6 +250,7 @@ export interface ThreadDetailScreenProps {
   readonly environmentLabel: string | null;
   readonly feedbackSubmissions: ReadonlyArray<CodexFeedbackSubmission>;
   readonly onDismissFeedback: (id: MessageId) => void;
+  readonly rewindTargets?: ReadonlyMap<MessageId, MobileRewindTarget> | undefined;
   readonly selectedThreadFeed: ReadonlyArray<ThreadFeedEntry>;
   readonly pendingHandoff?: HandoffEndpoints | null;
   readonly activityRun: ThreadFeedLatestRun | null;
@@ -565,6 +568,47 @@ function ThreadDetailBody(
     AuthOrchestrationOperateScope,
   );
   const updateMetadata = useAtomCommand(threadEnvironment.updateMetadata, { reportFailure: false });
+  const revertCheckpoint = useAtomCommand(threadEnvironment.revertCheckpoint);
+  const rewinding = useRef(false);
+  const confirmRewind = (messageId: MessageId, target: MobileRewindTarget) => {
+    const ref = props.selectedThreadDetailRef;
+    if (ref === null || rewinding.current) return;
+    const detail = environmentThreadDetails.quietThreadAtom(ref);
+    const head = appAtomRegistry.get(detail)?.projection.runs.at(-1)?.id;
+    Dialog.confirm({
+      title: gt("Rewind to before this message?"),
+      message: gt("Later turns will be removed from this chat. Your files will be kept."),
+      confirmText: gt("Rewind conversation"),
+      destructive: true,
+      onConfirm: () => {
+        if (
+          rewinding.current ||
+          !readEnvironmentScope(ref.environmentId, AuthOrchestrationOperateScope)
+        )
+          return;
+        const projection = appAtomRegistry.get(detail)?.projection;
+        if (
+          projection?.runs.at(-1)?.id !== head ||
+          mobileRewindTargets(projection).get(messageId)?.id !== target.id
+        ) {
+          Dialog.alert(gt("The thread has changed. Select a message to rewind again."));
+          return;
+        }
+        rewinding.current = true;
+        void revertCheckpoint({
+          environmentId: ref.environmentId,
+          input: {
+            threadId: ref.threadId,
+            checkpointId: target.id,
+            scopeId: target.scopeId,
+            restoreFiles: false,
+          },
+        }).finally(() => {
+          rewinding.current = false;
+        });
+      },
+    });
+  };
   const visitThread = useAtomCommand(threadEnvironment.visit, { reportFailure: false });
   const anyRunStop = useAtomValue(
     props.selectedThreadDetailRef === null
@@ -1546,6 +1590,16 @@ function ThreadDetailBody(
                   threadId={props.selectedThread.id}
                   detailRef={props.selectedThreadDetailRef}
                   workspaceRoot={props.threadCwd}
+                  rewindTargets={
+                    props.canOperateThread &&
+                    props.connectionStateLabel === "connected" &&
+                    !isProviderSubagent &&
+                    !props.queuedMessages.length &&
+                    !props.runlessWorkActive
+                      ? props.rewindTargets
+                      : undefined
+                  }
+                  onRewindMessage={confirmRewind}
                   feed={props.selectedThreadFeed}
                   pendingHandoff={props.pendingHandoff}
                   statusLines={statusLines}

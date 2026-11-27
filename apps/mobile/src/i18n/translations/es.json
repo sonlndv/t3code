@@ -5703,5 +5703,11 @@
   "99451a5d2d40440f": "Retirada por {by}.",
   "3ee30a50b70fffab": "Retirada por {by}: {reason}",
   "201490988858b511": "retirada por {by}",
-  "46d614fa7b4bf1e5": "Ejecuciones de flujos de trabajo"
+  "46d614fa7b4bf1e5": "Ejecuciones de flujos de trabajo",
+  "88ddb8c480f0642d": "No se pudo abrir el hilo",
+  "25239403bba45805": "Continuar en el chat",
+  "9ee30026fe8d069b": "¿Volver al punto anterior a este mensaje?",
+  "b3c431b01e65101f": "Los turnos posteriores se eliminarán de este chat. Tus archivos se conservarán.",
+  "22b3c49b2a434be2": "Retroceder en la conversación",
+  "6c564f3a631a0ee7": "El hilo ha cambiado. Vuelve a seleccionar un mensaje para retroceder."
 }

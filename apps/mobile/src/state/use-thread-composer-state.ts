@@ -71,6 +71,7 @@ import {
 } from "../lib/composerImages";
 import { retainComposerAttachmentFileForPreview } from "../lib/composerAttachmentPreviewRetention";
 import { scopedThreadKey } from "../lib/scopedEntities";
+import { mobileRewindTargets } from "../features/threads/threadRewind";
 import { buildThreadFeed, createThreadFeedCache } from "../lib/threadActivity";
 import {
   acknowledgedThreadMessagesAtom,
@@ -279,6 +280,17 @@ export function useThreadComposerState(input: {
       [selectedThreadKey]: (current[selectedThreadKey] ?? []).filter((entry) => entry.id !== id),
     }));
   };
+  const projection = selectedThreadProjection?.projection;
+  const rewindTargets = mobileRewindTargets(
+    projection && {
+      thread: projection.thread,
+      runs: projection.runs,
+      checkpoints: projection.checkpoints,
+      checkpointScopes: projection.checkpointScopes,
+      providerSessions: projection.providerSessions,
+      providerThreads: projection.providerThreads,
+    },
+  );
   const selectedThreadMessages = selectedThreadProjection?.projection.messages;
   const selectedThreadAttempts = selectedThreadProjection?.projection.attempts;
   const selectedThreadNodes = selectedThreadProjection?.projection.nodes;
@@ -1049,6 +1061,7 @@ export function useThreadComposerState(input: {
   return {
     feedbackSubmissions,
     dismissFeedback,
+    rewindTargets: selectedThreadDetailBehindShell ? undefined : rewindTargets,
     selectedThreadFeed,
     selectedThreadActivityRun,
     selectedThreadAnnouncedRun,

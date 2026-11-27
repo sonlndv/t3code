@@ -1,3 +1,4 @@
+import { completedWorkerThreadId, type OrchestrationV2Subagent } from "@t3tools/contracts";
 import type {
   ModelSelection,
   OrchestrationV2TurnItemStatus,
@@ -11,6 +12,23 @@ import { resolveModelShortName } from "../providerClients.ts";
 import { isTerminalSubagentStatus } from "./subagentRuntime.ts";
 import { mFallback, msg } from "gt-i18n";
 import type { MFunctionType } from "gt-i18n/types";
+
+export function completedWorkerForkInput(agent: OrchestrationV2Subagent | null | undefined) {
+  if (
+    agent?.status !== "completed" ||
+    agent.nativeWorkerSessionId === undefined ||
+    agent.childThreadId !== null ||
+    agent.runId === null
+  )
+    return null;
+  return {
+    sourceThreadId: agent.threadId,
+    targetThreadId: completedWorkerThreadId(agent.nativeWorkerSessionId, agent.id),
+    completedSubagentId: agent.id,
+    runId: agent.runId,
+    ...(agent.title ? { title: formatSubagentDisplayTitle(agent.title) } : {}),
+  };
+}
 
 export function subagentGroupSummary(
   members: ReadonlyArray<{ readonly status: OrchestrationV2TurnItemStatus }>,

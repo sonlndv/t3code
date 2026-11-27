@@ -351,20 +351,29 @@ export interface PendingThreadRequests {
   readonly userInputs: ReadonlyArray<ThreadPendingUserInput>;
 }
 
-export function seedUserInputDraftAnswers<Draft extends { readonly customAnswer?: string }>(
+type SuggestedInputDraft = {
+  readonly customAnswer?: string;
+  readonly selectedOptionValues?: ReadonlyArray<string>;
+};
+
+export function seedUserInputDraftAnswers<Draft extends SuggestedInputDraft>(
   questions: ReadonlyArray<
-    Pick<OrchestrationV2UserInputQuestion, "id" | "allowCustomAnswer" | "initialAnswer">
+    Pick<
+      OrchestrationV2UserInputQuestion,
+      "id" | "allowCustomAnswer" | "initialAnswer" | "initialOptionValues"
+    >
   >,
   drafts: Record<string, Draft>,
-): Record<string, Draft | { customAnswer: string }> {
-  // Entries, not assignment, so an id such as `__proto__` becomes an own draft.
-  const seeds = questions.flatMap((question) =>
-    question.initialAnswer === undefined ||
-    question.allowCustomAnswer === false ||
-    Object.hasOwn(drafts, question.id)
-      ? []
-      : [[question.id, { customAnswer: question.initialAnswer }] as const],
-  );
+): Record<string, Draft | SuggestedInputDraft> {
+  const seeds: [string, SuggestedInputDraft][] = [];
+  for (const question of questions) {
+    if (Object.hasOwn(drafts, question.id)) continue;
+    if (question.initialOptionValues?.length) {
+      seeds.push([question.id, { selectedOptionValues: question.initialOptionValues }]);
+    } else if (question.initialAnswer !== undefined && question.allowCustomAnswer !== false) {
+      seeds.push([question.id, { customAnswer: question.initialAnswer }]);
+    }
+  }
   return seeds.length === 0 ? drafts : { ...drafts, ...Object.fromEntries(seeds) };
 }
 

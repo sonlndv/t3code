@@ -5711,5 +5711,11 @@
   "99451a5d2d40440f": "Withdrawn by {by}.",
   "3ee30a50b70fffab": "Withdrawn by {by}: {reason}",
   "201490988858b511": "withdrawn by {by}",
-  "46d614fa7b4bf1e5": "Workflow runs"
+  "46d614fa7b4bf1e5": "Workflow runs",
+  "88ddb8c480f0642d": "Could not open thread",
+  "25239403bba45805": "Continue in chat",
+  "9ee30026fe8d069b": "Rewind to before this message?",
+  "b3c431b01e65101f": "Later turns will be removed from this chat. Your files will be kept.",
+  "22b3c49b2a434be2": "Rewind conversation",
+  "6c564f3a631a0ee7": "The thread has changed. Select a message to rewind again."
 }

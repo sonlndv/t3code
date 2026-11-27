@@ -1147,6 +1147,7 @@ function ThreadRouteContent(
         canSwitchThreadProvider={composer.canSwitchThreadProvider}
         onRespondToApproval={requests.onRespondToApproval}
         onSelectUserInputOption={requests.onSelectUserInputOption}
+        rewindTargets={composer.rewindTargets}
         onChangeUserInputCustomAnswer={requests.onChangeUserInputCustomAnswer}
         onSubmitUserInput={requests.onSubmitUserInput}
         onDismissUserInput={requests.onDismissUserInput}

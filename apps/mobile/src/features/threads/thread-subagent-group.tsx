@@ -6,7 +6,11 @@ import {
   resolveProviderInstanceDisplayName,
   shouldShowInstanceBadge,
 } from "@t3tools/client-runtime/state/provider-instance-display";
-import { summarizeSubagentStatuses } from "@t3tools/client-runtime/state/subagent-display";
+import { ContinueWorkerButton } from "./ContinueWorkerButton";
+import {
+  completedWorkerForkInput,
+  summarizeSubagentStatuses,
+} from "@t3tools/client-runtime/state/subagent-display";
 import { isActiveSubagentStatus } from "@t3tools/client-runtime/state/subagentRuntime";
 import type {
   EnvironmentId,
@@ -126,6 +130,8 @@ export function ThreadSubagentGroup(props: {
     const live = liveAgents?.find((agent) => agent.id === item.subagentId);
     return {
       ...item,
+      childThreadId: live?.childThreadId ?? item.childThreadId,
+      continuation: completedWorkerForkInput(live),
       item,
       status: live?.status ?? item.status,
       startedAt: live?.startedAt ?? item.startedAt,
@@ -208,58 +214,73 @@ export function ThreadSubagentGroup(props: {
               reach.isLinked,
             );
             return (
-              <Pressable
-                key={agent.item.id}
-                accessible
-                accessibilityRole={target === null ? undefined : "link"}
-                accessibilityHint={
-                  target === null
-                    ? gt("Provider-managed agent")
-                    : target.linked === undefined
-                      ? gt("Opens this agent's thread")
-                      : gt("Opens a read-only view of this agent's thread on {label}", {
-                          label: target.linked.label,
-                        })
-                }
-                disabled={target === null}
-                onPress={() => {
-                  if (target === null) return;
-                  if (target.linked !== undefined) {
-                    openLinkedRead(target, target.linked, agent.title, {
-                      source: {
-                        environmentId: props.environmentId,
-                        threadId: members[0]!.threadId,
-                      },
-                    });
-                    return;
+              <View key={agent.item.id}>
+                <Pressable
+                  accessible
+                  accessibilityRole={target === null ? undefined : "link"}
+                  accessibilityHint={
+                    target === null
+                      ? gt("Provider-managed agent")
+                      : target.linked === undefined
+                        ? gt("Opens this agent's thread")
+                        : gt("Opens a read-only view of this agent's thread on {label}", {
+                            label: target.linked.label,
+                          })
                   }
-                  if (
-                    openInspector(
-                      { environmentId: props.environmentId, threadId: members[0]!.threadId },
-                      {
-                        type: "thread",
-                        environmentId: target.environmentId,
-                        threadId: target.threadId,
-                      },
+                  disabled={target === null}
+                  onPress={() => {
+                    if (target === null) return;
+                    if (target.linked !== undefined) {
+                      openLinkedRead(target, target.linked, agent.title, {
+                        source: {
+                          environmentId: props.environmentId,
+                          threadId: members[0]!.threadId,
+                        },
+                      });
+                      return;
+                    }
+                    if (
+                      openInspector(
+                        { environmentId: props.environmentId, threadId: members[0]!.threadId },
+                        {
+                          type: "thread",
+                          environmentId: target.environmentId,
+                          threadId: target.threadId,
+                        },
+                      )
                     )
-                  )
-                    return;
-                  navigation.dispatch(
-                    StackActions.push("Thread", {
-                      environmentId: String(target.environmentId),
-                      threadId: String(target.threadId),
-                    }),
-                  );
-                }}
-                className="rounded-lg px-3 py-3 active:bg-subtle"
-              >
-                <SubagentRow
-                  environmentId={props.environmentId}
-                  subagent={agent}
-                  canOpenRemote={target !== null}
-                  elapsed={<SubagentElapsed agents={[agent]} />}
-                />
-              </Pressable>
+                      return;
+                    navigation.dispatch(
+                      StackActions.push("Thread", {
+                        environmentId: String(target.environmentId),
+                        threadId: String(target.threadId),
+                      }),
+                    );
+                  }}
+                  className="rounded-lg px-3 py-3 active:bg-subtle"
+                >
+                  <SubagentRow
+                    environmentId={props.environmentId}
+                    subagent={agent}
+                    canOpenRemote={target !== null}
+                    elapsed={<SubagentElapsed agents={[agent]} />}
+                  />
+                </Pressable>
+                {agent.continuation ? (
+                  <ContinueWorkerButton
+                    environmentId={props.environmentId}
+                    input={agent.continuation}
+                    onOpen={(threadId) =>
+                      navigation.dispatch(
+                        StackActions.push("Thread", {
+                          environmentId: props.environmentId,
+                          threadId,
+                        }),
+                      )
+                    }
+                  />
+                ) : null}
+              </View>
             );
           })}
         </View>

@@ -21,6 +21,8 @@ import { useMemo } from "react";
 import { Pressable, ScrollView, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { completedWorkerForkInput } from "@t3tools/client-runtime/state/subagent-display";
+import { ContinueWorkerButton } from "./ContinueWorkerButton";
 import { SheetHeader } from "../../components/ui/SheetHeader";
 import { AppText as Text } from "../../components/ui/AppText";
 import { environmentThreadDetails } from "../../state/threads";
@@ -150,6 +152,7 @@ function AgentRow(props: {
   readonly onOpen: (child: SubagentThreadTarget, title: string | null) => void;
 }) {
   const { subagent } = props;
+  const continuation = completedWorkerForkInput(subagent);
   const gt = useGT();
   const reach = useLinkedThreadReach(props.environmentId, [subagent]);
   const target = subagentThreadTarget(
@@ -199,6 +202,15 @@ function AgentRow(props: {
   return (
     <View className="flex-row items-center">
       {content}
+      {continuation ? (
+        <ContinueWorkerButton
+          environmentId={props.environmentId}
+          input={continuation}
+          onOpen={(threadId) =>
+            props.onOpen({ environmentId: props.environmentId, threadId }, subagent.title)
+          }
+        />
+      ) : null}
       <SubagentStopButton environmentId={props.environmentId} subagent={subagent} />
     </View>
   );

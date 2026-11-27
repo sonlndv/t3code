@@ -13,7 +13,7 @@ import {
   runRanAfter,
   usageLimitBlockedRun,
 } from "@t3tools/shared/orchestrationV2ThreadError";
-import { threadIssueKeysEqual } from "@t3tools/contracts";
+import { completedWorkerThreadId, threadIssueKeysEqual } from "@t3tools/contracts";
 import { canonicalizeGitCafePullRequestUrl } from "@t3tools/source-control-definitions/registry";
 import { threadPullRequestsOf } from "../sourceControl/threadPullRequests.ts";
 import {
@@ -214,6 +214,7 @@ import {
   endOrphanedNativeSubagent,
   endRunlessRootTurns,
   makeSubagentChildThread,
+  makeSubagentConversationArtifacts,
   SUBAGENT_RESULT_TURN_ITEM_TYPES,
   subagentResultForRun,
   delegatedTaskProgress,
@@ -1318,6 +1319,7 @@ function runForSourcePoint(
     case "latest_stable":
       return latestStableRun(projection);
     case "run":
+    case "completed_subagent":
       return projection.runs.find((run) => run.id === sourcePoint.runId) ?? null;
     case "checkpoint": {
       const checkpoint = projection.checkpoints.find(
@@ -6161,6 +6163,184 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         commandType: command.type,
         cause: `Thread ${command.sourceThreadId} ${workspaceStatus}. Start the side chat once its worktree is set up.`,
       });
+    }
+    if (command.sourcePoint.type === "completed_subagent") {
+      const workerId = command.sourcePoint.subagentId;
+      const reject = (cause: unknown) =>
+        new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause,
+        });
+      if (command.sideChat) {
+        return yield* reject("Invalid target for a completed worker conversation.");
+      }
+      const { subagents } = yield* projectionStore
+        .getThreadRecords(command.sourceThreadId, ["subagents"], {
+          subagentIds: [workerId],
+        })
+        .pipe(mapDispatchError(command));
+      const task = subagents[0];
+      const sourceRun = runForSourcePoint(sourceProjection, command.sourcePoint);
+      if (
+        !task ||
+        !sourceRun ||
+        task.runId !== sourceRun.id ||
+        task.origin !== "provider_native" ||
+        task.status !== "completed" ||
+        !task.nativeWorkerSessionId ||
+        !task.nativeTaskRef?.nativeId ||
+        task.providerInstanceId !== sourceRun.providerInstanceId
+      ) {
+        return yield* reject("This task has no completed OMP worker conversation.");
+      }
+      if (command.targetThreadId !== completedWorkerThreadId(task.nativeWorkerSessionId, workerId))
+        return yield* reject("Invalid worker continuation thread ID.");
+      const existing = yield* findThread(command.targetThreadId);
+      if (existing) {
+        if (
+          existing.deletedAt !== null ||
+          existing.lineage.parentThreadId !== command.sourceThreadId ||
+          existing.forkedFrom?.type !== "node" ||
+          existing.forkedFrom.nodeId !== workerId
+        )
+          return yield* reject("The worker continuation is unavailable.");
+        return;
+      }
+      const providerThread = providerThreadForRun(sourceProjection, sourceRun);
+      const parentRef =
+        providerTurnForRun(sourceProjection, sourceRun)?.nativeThreadRef ??
+        providerThread?.nativeThreadRef;
+      if (
+        !providerThread ||
+        task.providerThreadId !== providerThread.id ||
+        !parentRef?.nativeId ||
+        parentRef.driver !== task.driver ||
+        parentRef.strength !== "strong"
+      )
+        return yield* reject("The parent OMP session is unavailable.");
+      const project = yield* projects
+        .get(sourceProjection.thread.projectId)
+        .pipe(mapDispatchError(command));
+      const cwd =
+        sourceProjection.thread.worktreePath ?? Option.getOrUndefined(project)?.workspaceRoot;
+      if (!cwd) return yield* reject("The worker workspace is unavailable.");
+      const snapshot = {
+        parent: parentRef.nativeId,
+        taskId: task.nativeTaskRef.nativeId,
+        cwd,
+        sessionId: task.nativeWorkerSessionId,
+        targetThread: command.targetThreadId,
+      };
+      const adapter = yield* providerAdapters
+        .get(task.providerInstanceId)
+        .pipe(mapDispatchError(command));
+      if (adapter.driver !== task.driver || adapter.forkWorkerSession === undefined)
+        return yield* reject("This provider cannot continue a completed worker.");
+      const forkRef = yield* adapter.forkWorkerSession(snapshot).pipe(mapDispatchError(command));
+      if (!forkRef.nativeId || forkRef.strength !== "strong" || forkRef.driver !== task.driver)
+        return yield* reject("The provider returned no resumable worker conversation.");
+      const now = yield* DateTime.now;
+      const providerThreadId = idAllocator.derive.providerThread({
+        driver: task.driver,
+        nativeThreadId: forkRef.nativeId,
+      });
+      const child = makeSubagentChildThread({
+        parentThread: sourceProjection.thread,
+        childThreadId: command.targetThreadId,
+        parentNodeId: workerId,
+        activeProviderThreadId: providerThreadId,
+        providerInstanceId: task.providerInstanceId,
+        modelSelection: {
+          instanceId: task.providerInstanceId,
+          model: task.model || sourceRun.modelSelection.model,
+        },
+        title: command.title ?? task.title ?? task.nativeTaskRef.nativeId,
+        now,
+        createdBy: command.createdBy,
+        creationSource: command.creationSource,
+      });
+      const emitEvent = emit(events, command);
+      const base = {
+        threadId: child.id,
+        providerInstanceId: child.providerInstanceId,
+        occurredAt: now,
+      };
+      yield* emitEvent({
+        ...base,
+        type: "thread.created",
+        payload: {
+          ...child,
+          workflowRun: undefined,
+          lineage: { ...child.lineage, relationshipToParent: "fork" },
+        },
+      });
+      yield* emitEvent({
+        ...base,
+        type: "provider-thread.updated",
+        payload: {
+          id: providerThreadId,
+          driver: task.driver,
+          providerInstanceId: task.providerInstanceId,
+          appThreadId: child.id,
+          providerSessionId: null,
+          ownerNodeId: null,
+          status: "not_loaded",
+          nativeThreadRef: forkRef,
+          nativeConversationHeadRef: null,
+          firstRunOrdinal: null,
+          lastRunOrdinal: null,
+          handoffIds: [],
+          forkedFrom: { providerThreadId: providerThread.id },
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+      const identity = { driver: task.driver, nativeItemId: child.id };
+      const nodeId = idAllocator.derive.nodeFromProviderItem(identity);
+      yield* emitEvent({
+        ...base,
+        type: "node.updated",
+        nodeId,
+        payload: {
+          id: nodeId,
+          threadId: child.id,
+          runId: null,
+          parentNodeId: null,
+          rootNodeId: nodeId,
+          kind: "root_turn",
+          status: "completed",
+          countsForRun: false,
+          providerThreadId,
+          providerTurnId: null,
+          nativeItemRef: null,
+          runtimeRequestId: null,
+          checkpointScopeId: null,
+          startedAt: task.startedAt,
+          completedAt: task.completedAt,
+        },
+      });
+      for (const role of ["user", "assistant"] as const) {
+        const text = role === "user" ? task.prompt : task.result;
+        if (!text) continue;
+        const item = { driver: task.driver, nativeItemId: child.id + ":" + role };
+        const { message, turnItem } = makeSubagentConversationArtifacts({
+          messageId: idAllocator.derive.messageFromProviderItem(item),
+          turnItemId: idAllocator.derive.turnItemFromProviderItem(item),
+          threadId: child.id,
+          rootNodeId: nodeId,
+          providerThreadId,
+          providerTurnId: null,
+          nativeItemRef: null,
+          role,
+          text,
+          ordinal: role === "user" ? 0 : 1,
+          now: (role === "user" ? task.startedAt : task.completedAt) ?? now,
+        });
+        yield* emitEvent({ ...base, nodeId, type: "message.updated", payload: message });
+        yield* emitEvent({ ...base, nodeId, type: "turn-item.updated", payload: turnItem });
+      }
+      return;
     }
     if ((yield* findThread(command.targetThreadId)) !== null) {
       return yield* new OrchestratorThreadAlreadyExistsError({
@@ -16606,6 +16786,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         (planned) =>
           planned.events.length > 0 ||
           isUnobservedAcknowledgement(command) ||
+          (command.type === "thread.fork" && command.sourcePoint.type === "completed_subagent") ||
           command.type === "thread.background-work.settle" ||
           // A stale visit changes no read state.
           command.type === "thread.visit" ||

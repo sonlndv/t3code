@@ -8,6 +8,19 @@ Install `omp` on the T3 server and sign in with `omp login`. Choose **OMP** in t
 
 Choose a skill with `$` or type `/skill:<name>`. To delegate to OMP workers, ask OMP to use its native `task` tool. OMP uses its own model and role settings. Switching to a different T3 provider doesn't move running workers.
 
+When OMP asks a question, answer it in the chat composer. For forms with several
+fields, review each answer and submit them together. OMP receives the answers in
+the same turn.
+
+To follow up with a worker, expand the subagents in the parent chat and choose
+**Continue in chat** beside a completed worker. The new chat starts with the
+worker's task and result. OMP uses a separate copy of that worker's conversation
+for follow-ups. Choosing the action again opens the same chat. The action is
+available for workers whose native session T3 identified when they finished.
+
+To try a different approach, rewind to before an earlier message and send a
+replacement. Choose the conversation-only action to keep the files on disk.
+
 ### Use OMP's own interface in the same conversation
 
 1. Finish the current turn and background work, then archive the thread. Archiving closes its T3 terminals.

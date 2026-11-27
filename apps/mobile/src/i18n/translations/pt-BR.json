@@ -5703,5 +5703,11 @@
   "99451a5d2d40440f": "Retirada por {by}.",
   "3ee30a50b70fffab": "Retirada por {by}: {reason}",
   "201490988858b511": "retirada por {by}",
-  "46d614fa7b4bf1e5": "Execuções de workflow"
+  "46d614fa7b4bf1e5": "Execuções de workflow",
+  "88ddb8c480f0642d": "Não foi possível abrir a conversa",
+  "25239403bba45805": "Continuar no chat",
+  "9ee30026fe8d069b": "Voltar ao ponto anterior a esta mensagem?",
+  "b3c431b01e65101f": "As mensagens posteriores serão removidas desta conversa. Seus arquivos serão preservados.",
+  "22b3c49b2a434be2": "Retroceder na conversa",
+  "6c564f3a631a0ee7": "A conversa mudou. Selecione novamente uma mensagem para retroceder."
 }
