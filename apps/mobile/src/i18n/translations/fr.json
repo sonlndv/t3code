@@ -5611,5 +5611,11 @@
   "8d545d54c0a9e950": "Masque les commandes, modifications et recherches lancées par les agents. Masquer les réussis garde les échecs. Zen n’affiche que les réponses finales. Les approbations, questions et erreurs s’affichent toujours.",
   "99d51127f573296b": "Autre compte",
   "8ec2c57414669b79": "Connectez un second espace de travail ou utilisateur {tracker}.",
-  "892f08d21b8e48a9": "Fusionner {layers} dans {base} avec {kind, select, squash {squash} merge {merge} rebase {rebase} fastForward {fast-forward} other {{method}}} dès que leurs conditions sont remplies. Cela peut se produire immédiatement."
+  "892f08d21b8e48a9": "Fusionner {layers} dans {base} avec {kind, select, squash {squash} merge {merge} rebase {rebase} fastForward {fast-forward} other {{method}}} dès que leurs conditions sont remplies. Cela peut se produire immédiatement.",
+  "88ddb8c480f0642d": "Impossible d’ouvrir la conversation",
+  "25239403bba45805": "Continuer dans le chat",
+  "9ee30026fe8d069b": "Revenir au point précédant ce message ?",
+  "b3c431b01e65101f": "Les échanges suivants seront retirés de cette conversation. Vos fichiers seront conservés.",
+  "22b3c49b2a434be2": "Revenir en arrière",
+  "6c564f3a631a0ee7": "La conversation a changé. Sélectionnez à nouveau un message pour revenir en arrière."
 }

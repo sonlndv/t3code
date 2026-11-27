@@ -1,5 +1,6 @@
 import { T, Var, msg, useGT, useMessages } from "gt-react";
 import { ThreadHoverCardPopup } from "../ThreadHoverCard";
+import { ContinueWorkerButton } from "./ContinueWorkerButton";
 import { AgentElapsed } from "./AgentElapsed";
 import { projectedSubagentsToRuntime } from "@t3tools/client-runtime/state/subagentRuntime";
 import { use, type ReactNode } from "react";
@@ -22,6 +23,7 @@ import {
   resolveModelSwitchChange,
 } from "@t3tools/client-runtime/handoff";
 import {
+  completedWorkerForkInput,
   formatSubagentDisplayTitle,
   subagentCardDetail,
 } from "@t3tools/client-runtime/state/subagent-display";
@@ -465,7 +467,8 @@ function SubagentTimelineLink(props: {
   const remote = props.remote ?? agent?.remoteChild;
   const gt = useGT();
   const m = useMessages();
-  const threadId = props.threadId;
+  const threadId = agent?.childThreadId ?? props.threadId;
+  const continuation = completedWorkerForkInput(agent);
   // A task in a linked environment opens there, or read-only through this one.
   const remoteOpener = useLinkedThreadOpener(props.parentRef, remote, props.title);
   const trigger = useSideThreadTrigger();
@@ -536,6 +539,13 @@ function SubagentTimelineLink(props: {
       <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
         {props.event ? props.event.timestamp : <SubagentElapsed agent={timing} />}
       </span>
+      {canOpen && open === null && continuation ? (
+        <ContinueWorkerButton
+          environmentId={props.parentRef.environmentId}
+          input={continuation}
+          onOpen={(id) => props.onOpenThread(id)}
+        />
+      ) : null}
       {open !== null ? (
         <ChevronRightIcon
           aria-hidden

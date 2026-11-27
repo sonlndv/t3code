@@ -5617,5 +5617,11 @@
   "8d545d54c0a9e950": "Dölj kommandon, redigeringar och sökningar som agenter kör. Dölj lyckade behåller misslyckanden. Zen visar bara slutliga svar. Godkännanden, frågor och fel visas alltid.",
   "99d51127f573296b": "Ett konto till",
   "8ec2c57414669b79": "Anslut en andra {tracker}-arbetsyta eller användare.",
-  "892f08d21b8e48a9": "Merga {layers} in i {base} med {kind, select, squash {squash} merge {merge} rebase {rebase} fastForward {fast-forward} other {{method}}} när kraven är uppfyllda. Det kan ske direkt."
+  "892f08d21b8e48a9": "Merga {layers} in i {base} med {kind, select, squash {squash} merge {merge} rebase {rebase} fastForward {fast-forward} other {{method}}} när kraven är uppfyllda. Det kan ske direkt.",
+  "88ddb8c480f0642d": "Kunde inte öppna tråden",
+  "25239403bba45805": "Fortsätt i chatten",
+  "9ee30026fe8d069b": "Gå tillbaka till före det här meddelandet?",
+  "b3c431b01e65101f": "Senare inlägg tas bort från chatten. Dina filer behålls.",
+  "22b3c49b2a434be2": "Spola tillbaka konversationen",
+  "6c564f3a631a0ee7": "Tråden har ändrats. Välj ett meddelande igen för att gå tillbaka."
 }

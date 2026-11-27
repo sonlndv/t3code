@@ -361,6 +361,9 @@ const makeFakePi: Effect.Effect<FakePi> = Effect.gen(function* () {
         return { ...base, data: messagesQueue.shift() ?? { messages: [] } };
       case "get_session_stats":
         return { ...base, data: statsQueue.shift() ?? {} };
+      case "branch":
+        sessionFile = "/fake/branched.jsonl";
+        return { ...base, data: { text: "first prompt", cancelled: false } };
       case "fork":
         if (failFork) {
           failFork = false;
@@ -1034,6 +1037,58 @@ describe("OMP native RPC", () => {
     }).pipe(Effect.scoped, Effect.provide(layerTest)),
   );
 
+  it.effect("withdraws an OMP question and sends native timeout semantics for expired forms", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi;
+      const runtime = yield* openOmpTestSession(fake);
+      const { takeEvent } = yield* observeRuntime(runtime);
+      fake.queueState({ isSettled: true, hasPendingAsyncWork: false });
+      yield* runtime.ensureThread({
+        threadId: THREAD_ID,
+        modelSelection: ompTestSelection,
+        runtimePolicy,
+      });
+      yield* fake.emit({
+        type: "extension_ui_request",
+        method: "ask",
+        id: "ask-cancel",
+        questions: [{ id: "feature", question: "Enable it?", options: [{ label: "Yes" }] }],
+      });
+      yield* takeEvent(
+        (e) => e.type === "runtime_request.updated" && e.runtimeRequest.status === "pending",
+      );
+      yield* fake.emit({
+        type: "extension_ui_request",
+        method: "cancel",
+        id: "cancel",
+        targetId: "ask-cancel",
+      });
+      yield* takeEvent(
+        (e) => e.type === "runtime_request.updated" && e.runtimeRequest.status === "cancelled",
+      );
+      yield* fake.emit({
+        type: "extension_ui_request",
+        method: "form",
+        id: "expires",
+        html: "<form>Proceed?</form>",
+        timeout: 30,
+      });
+      yield* takeEvent(
+        (e) =>
+          e.type === "turn_item.updated" &&
+          e.turnItem.type === "user_input_request" &&
+          e.turnItem.nativeItemRef?.nativeId === "expires",
+      );
+      yield* TestClock.adjust(Duration.millis(30));
+      assert.deepEqual(yield* fake.takeRequest("extension_ui_response"), {
+        id: "expires",
+        type: "extension_ui_response",
+        cancelled: true,
+        timedOut: true,
+      });
+    }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+
   it.effect(
     "preserves native identity and approval choices, and settles on OMP's terminal frame",
     () =>
@@ -1050,7 +1105,7 @@ describe("OMP native RPC", () => {
         });
         assert.equal(thread.nativeThreadRef?.driver, OMP_FLAVOR.driverKind);
         assert.equal(runtime.providerSession.capabilities.runtimePolicy.enforcement, "native");
-        assert.isFalse(runtime.providerSession.capabilities.threads.canRollbackThread);
+        assert.isTrue(runtime.providerSession.capabilities.threads.canRollbackThread);
         yield* startTurn(runtime, thread, "default", [], "Hello", selection);
         yield* fake.takeRequest("prompt");
         yield* fake.emit({ type: "agent_start" });
@@ -1089,12 +1144,27 @@ describe("OMP native RPC", () => {
           type: "extension_ui_request",
           method: "form",
           id: "form-1",
-          html: "<form></form>",
+          html: '<form><fieldset><legend>Ship where?</legend><label><input type="radio" name="destination" value="staging" checked>Staging</label><label><input type="radio" name="destination" value="prod">Production</label></fieldset><label>Note<textarea name="note">hello</textarea></label></form>',
+        });
+        const card = yield* takeEvent(
+          (event) =>
+            event.type === "turn_item.updated" && event.turnItem.type === "user_input_request",
+        );
+        if (card.type !== "turn_item.updated" || card.turnItem.type !== "user_input_request")
+          throw new Error("Expected OMP form");
+        assert.deepEqual(
+          card.turnItem.questions.map((q) => q.question),
+          ["Ship where?", "Note"],
+        );
+        assert.deepEqual(card.turnItem.questions[0]?.initialOptionValues, ["staging"]);
+        yield* runtime.respondToRuntimeRequest({
+          requestId: card.turnItem.requestId,
+          answers: { "0": "prod", "1": "go" },
         });
         assert.deepEqual(yield* fake.takeRequest("extension_ui_response"), {
           type: "extension_ui_response",
           id: "form-1",
-          cancelled: true,
+          data: { destination: "prod", note: "go" },
         });
         yield* fake.emit({
           type: "tool_execution_start",
@@ -4894,6 +4964,72 @@ describe("PiAdapterV2", () => {
         leafId: "new-user",
       });
       yield* finish();
+    }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+
+  it.effect.each([
+    { type: "message", message: { role: "user" } },
+    { type: "custom_message", customType: "skill-prompt", attribution: "user" },
+  ])("rewinds OMP at the first discarded $type and continues on the branched file", (entry) =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi;
+      const runtime = yield* openOmpTestSession(fake);
+      const { takeEvent } = yield* observeRuntime(runtime);
+      fake.queueState({ isSettled: true, hasPendingAsyncWork: false });
+      const providerThread = yield* runtime.ensureThread({
+        threadId: THREAD_ID,
+        modelSelection: ompTestSelection,
+        runtimePolicy,
+      });
+      yield* startTurn(runtime, providerThread, "default", [], "Hello", ompTestSelection);
+      yield* fake.takeRequest("prompt");
+      yield* fake.emit({ type: "agent_start" });
+      fake.queueEntries({
+        entries: [
+          {
+            id: "first-prompt",
+            parentId: null,
+            ...entry,
+          },
+        ],
+        leafId: "first-prompt",
+      });
+      fake.queueState({ isSettled: true, hasPendingAsyncWork: false });
+      yield* fake.emit({ type: "session_settled" });
+      const completed = yield* takeEvent(
+        (event) =>
+          event.type === "provider_turn.updated" && event.providerTurn.status === "completed",
+      );
+      if (completed.type !== "provider_turn.updated")
+        throw new Error("Expected a settled OMP turn");
+      assert.equal(completed.providerTurn.nativeTurnRef?.nativeId, "first-prompt");
+      yield* takeEvent((event) => event.type === "turn.terminal");
+      const rewind = runtime.rollbackThread({
+        providerThread,
+        target: {
+          type: "thread_start",
+          checkpointId: CheckpointId.make("start"),
+          appRunOrdinal: 0,
+        },
+        providerThreadTurns: [completed.providerTurn],
+      });
+      fake.queueState({ isSettled: true, hasPendingAsyncWork: true });
+      assert.equal((yield* Effect.result(rewind))._tag, "Failure");
+      assert.isFalse(fake.allRequests().some((request) => request.type === "branch"));
+      fake.queueState({ isSettled: true, hasPendingAsyncWork: false });
+      const snapshot = yield* rewind;
+      assert.equal((yield* fake.takeRequest("branch")).entryId, "first-prompt");
+      assert.equal(snapshot.providerThread.nativeThreadRef?.nativeId, "/fake/branched.jsonl");
+      yield* startTurn(
+        runtime,
+        snapshot.providerThread,
+        "default",
+        [],
+        "Replacement",
+        ompTestSelection,
+        2,
+      );
+      assert.equal((yield* fake.takeRequest("prompt")).message, "Replacement");
     }).pipe(Effect.scoped, Effect.provide(layerTest)),
   );
 

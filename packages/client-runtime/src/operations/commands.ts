@@ -245,6 +245,7 @@ export interface RevertThreadCheckpointInput extends ThreadCommandInput {
 export type StopThreadSessionInput = ThreadCommandInput;
 
 export interface ForkThreadFromRunInput extends CommandMetadata {
+  readonly completedSubagentId?: NodeId;
   readonly sourceThreadId: ThreadId;
   readonly targetThreadId: ThreadId;
   readonly runId: RunId;
@@ -1127,7 +1128,10 @@ export const forkThreadFromRun = Effect.fn("EnvironmentCommands.forkThreadFromRu
     creationSource: input.creationSource ?? "web",
     sourceThreadId: input.sourceThreadId,
     targetThreadId: input.targetThreadId,
-    sourcePoint: { type: "run", runId: input.runId },
+    sourcePoint:
+      input.completedSubagentId === undefined
+        ? { type: "run", runId: input.runId }
+        : { type: "completed_subagent", runId: input.runId, subagentId: input.completedSubagentId },
     ...(input.title === undefined ? {} : { title: input.title }),
   });
 });

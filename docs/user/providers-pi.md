@@ -19,6 +19,19 @@ To run an OMP workflow in chat, ask OMP to use its own `task` tool. OMP picks
 workers using its configured roles and models. Picking **OMP** does not turn a
 Claude Code or Codex thread into an OMP thread. Those providers keep their own tools.
 
+When OMP asks a question, answer it in the chat composer. For forms with several
+fields, review each answer and submit them together. OMP receives the answers in
+the same turn.
+
+To follow up with a worker, expand the subagents in the parent chat and choose
+**Continue in chat** beside a completed worker. The new chat starts with the
+worker's task and result. OMP uses a separate copy of that worker's conversation
+for follow-ups. Choosing the action again opens the same chat. The action is
+available for workers whose native session T3 identified when they finished.
+
+To try a different approach, rewind to before an earlier message and send a
+replacement. Choose the conversation-only action to keep the files on disk.
+
 ### Use OMP's own interface in the same conversation
 
 Use OMP's own interface inside T3 for native screens, extension menus, keyboard

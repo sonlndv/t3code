@@ -69,11 +69,16 @@ export function resolvePendingUserInputAnswer(
       : question.initialAnswer !== undefined
         ? (draft?.customAnswer ?? null)
         : normalizeDraftAnswer(draft?.customAnswer);
-  if (customAnswer !== null && customAnswer.length > 0) {
-    return customAnswer;
-  }
+  if (
+    question.required &&
+    question.options.length === 0 &&
+    !customAnswer?.trim() &&
+    !draft?.attachmentCount
+  )
+    return null;
+  if (customAnswer !== null && customAnswer.length > 0) return customAnswer;
   if (question.required === false && question.options.length === 0) {
-    return "";
+    return question.allowCustomAnswer === false ? [] : "";
   }
 
   const selectedOptionValues = normalizeSelectedOptionValues(question, draft?.selectedOptionValues);
@@ -86,7 +91,7 @@ export function resolvePendingUserInputAnswer(
       ? selectedOptionValues
       : (fallback ?? (question.required ? null : []));
   }
-  return selectedOptionValues[0] ?? fallback;
+  return selectedOptionValues[0] ?? fallback ?? (question.required === false ? [] : null);
 }
 
 export function setPendingUserInputCustomAnswer(

@@ -219,6 +219,7 @@ describe("initial user input drafts", () => {
     { id: "editor", initialAnswer: "  Proposed commit\n\n" },
     { id: "empty", initialAnswer: "" },
     { id: "ordinary" },
+    { id: "selected", initialOptionValues: ["b", "c"] },
     { id: "choices", initialAnswer: "Ignore this", allowCustomAnswer: false },
   ];
 
@@ -227,10 +228,12 @@ describe("initial user input drafts", () => {
     expect(seeded).toEqual({
       editor: { customAnswer: "  Proposed commit\n\n" },
       empty: { customAnswer: "" },
+      selected: { selectedOptionValues: ["b", "c"] },
     });
     const edits = {
       ...seeded,
       editor: { customAnswer: "" },
+      selected: { selectedOptionValues: [] },
       empty: { selectedOptionValues: ["empty"], customAnswer: "" },
     };
     expect(seedUserInputDraftAnswers(questions, edits)).toEqual(edits);

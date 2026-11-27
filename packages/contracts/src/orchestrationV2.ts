@@ -2,6 +2,7 @@ import { OrchestrationMessageContext } from "./composerContext.ts";
 import { withRecordIdTable } from "./orchestrationV2IdTable.ts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Hash from "effect/Hash";
 import * as Schema from "effect/Schema";
 import * as SchemaAST from "effect/SchemaAST";
 import * as SchemaGetter from "effect/SchemaGetter";
@@ -1043,6 +1044,7 @@ export const OrchestrationV2Subagent = Schema.Struct({
   childThreadId: Schema.NullOr(ThreadId),
   remoteChild: Schema.optional(OrchestrationV2RemoteTaskChild),
   nativeTaskRef: Schema.NullOr(OrchestrationV2ProviderRef),
+  nativeWorkerSessionId: Schema.optional(TrimmedNonEmptyString),
   prompt: Schema.String,
   title: Schema.NullOr(Schema.String),
   model: Schema.NullOr(Schema.String),
@@ -1073,6 +1075,12 @@ export const OrchestrationV2Subagent = Schema.Struct({
   resultOmitted: DedupedBodyMarker,
 });
 export type OrchestrationV2Subagent = typeof OrchestrationV2Subagent.Type;
+
+export function completedWorkerThreadId(nativeSessionId: string, worker: NodeId) {
+  return ThreadId.make(
+    `worker:${encodeURIComponent(nativeSessionId)}:${Hash.string(worker).toString(36)}`,
+  );
+}
 
 export function isOrchestrationV2WorkActive(
   status: OrchestrationV2ExecutionNode["status"],
@@ -1581,6 +1589,7 @@ export const OrchestrationV2UserInputQuestion = Schema.Struct({
   multiSelect: Schema.optional(Schema.Boolean),
   allowCustomAnswer: Schema.optional(Schema.Boolean),
   initialAnswer: Schema.optional(Schema.String),
+  initialOptionValues: Schema.optional(Schema.Array(Schema.String)),
   required: Schema.optional(Schema.Boolean),
 });
 export type OrchestrationV2UserInputQuestion = typeof OrchestrationV2UserInputQuestion.Type;
@@ -3761,7 +3770,14 @@ export const OrchestrationV2Command = Schema.Union([
     commandId: CommandId,
     sourceThreadId: ThreadId,
     targetThreadId: ThreadId,
-    sourcePoint: OrchestrationV2ThreadForkSourcePoint,
+    sourcePoint: Schema.Union([
+      OrchestrationV2ThreadForkSourcePoint,
+      Schema.Struct({
+        type: Schema.Literal("completed_subagent"),
+        runId: RunId,
+        subagentId: NodeId,
+      }),
+    ]),
     title: Schema.optional(TrimmedNonEmptyString),
     sideChat: Schema.optional(Schema.Boolean),
     createdAt: Schema.optional(Schema.DateTimeUtc),

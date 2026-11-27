@@ -15,6 +15,7 @@ import {
   OrchestrationV2ProviderCapabilities,
   OrchestrationV2ProviderFailure,
   OrchestrationV2ProviderRetry,
+  OrchestrationV2ProviderRef,
   OrchestrationV2ProviderThread,
   OrchestrationV2ProviderTurn,
   OrchestrationV2RuntimeRequest,
@@ -893,6 +894,14 @@ export class ProviderAdapterV2 extends Context.Service<
       OrchestrationV2ProviderCapabilities,
       ProviderAdapterV2Error
     >;
+    /** Creates an independently resumable copy of a completed native worker. */
+    readonly forkWorkerSession?: (input: {
+      readonly parent: string;
+      readonly taskId: string;
+      readonly sessionId: string;
+      readonly cwd: string;
+      readonly targetThread: ThreadId;
+    }) => Effect.Effect<OrchestrationV2ProviderRef, ProviderAdapterV2Error>;
     readonly planSelectionTransition: (
       input: ProviderSelectionTransitionInput,
     ) => Effect.Effect<ProviderSelectionTransitionPlan, ProviderAdapterV2Error>;

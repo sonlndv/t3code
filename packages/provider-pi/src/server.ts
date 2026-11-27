@@ -3,3 +3,5 @@ export { PI_PROVIDER, PiAdapterV2Driver, type PiAdapterV2DriverEnv } from "./ser
 export { prepareOmpResume } from "./server/ompResume.ts";
 export { requireOmpApprovalSupport } from "./server/rpc.ts";
 export { resolveOmpLaunchArgs } from "./server/mcpInjection.ts";
+
+export { forkOmpWorkerSession } from "./server/ompWorkerSession.ts";

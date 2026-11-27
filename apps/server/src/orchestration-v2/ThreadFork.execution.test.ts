@@ -1,5 +1,6 @@
 import { assert, it } from "@effect/vitest";
 import {
+  completedWorkerThreadId,
   CheckpointId,
   CheckpointRef,
   CheckpointScopeId,
@@ -24,6 +25,11 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Statement from "effect/sql/Statement";
 import * as Stream from "effect/Stream";
+import { forkOmpWorkerSession } from "@t3tools/provider-pi/server";
+import * as Path from "effect/Path";
+import * as Layer from "effect/Layer";
+import * as FileSystem from "effect/FileSystem";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as TestClock from "effect/testing/TestClock";
 
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
@@ -62,6 +68,201 @@ const forkCases = (
 
   return { driver, status, instanceId, modelSelection, layer };
 });
+
+const ompForkDriver = ProviderDriverKind.make("omp");
+const ompForkLayer = ProviderReplayHarness.layerWithRegistry(
+  { name: "omp-worker-continuation" },
+  ProviderAdapterRegistry.layerFromAdapters([
+    {
+      driver: ompForkDriver,
+      instanceId: ProviderInstanceId.make("omp"),
+      getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
+      planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" }),
+      openSession: () => Effect.die("This test stops before dispatching a follow-up."),
+      forkWorkerSession: (input) =>
+        Effect.gen(function* () {
+          const path = yield* Path.Path;
+          const file = yield* Effect.tryPromise({
+            try: () => forkOmpWorkerSession(path, input),
+            catch: (cause) =>
+              new ProviderAdapter.ProviderAdapterProtocolError({
+                driver: ompForkDriver,
+                detail: String(cause),
+              }),
+          });
+          return { driver: ompForkDriver, nativeId: file, strength: "strong" as const };
+        }).pipe(Effect.provide(NodeServices.layer)),
+    },
+  ]),
+  { runEffectWorker: false },
+);
+
+it.effect(
+  "a completed OMP worker opens an independent conversation with its own native journal",
+  () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const cwd = yield* fs.makeTempDirectoryScoped();
+      const parent = cwd + "/parent.jsonl";
+      yield* fs.writeFileString(parent, "{}");
+      yield* fs.makeDirectory(cwd + "/parent");
+      const workerFile = cwd + "/parent/Alpha.jsonl";
+      const now = yield* DateTime.now;
+      const header = {
+        type: "session",
+        id: "worker-native",
+        cwd,
+        parentSession: parent,
+        timestamp: DateTime.formatIso(now),
+      };
+      const entry = JSON.stringify({
+        type: "message",
+        id: "work",
+        message: { role: "assistant", content: "worker context" },
+      });
+      const transcript = JSON.stringify(header) + "\n" + entry + "\n";
+      yield* fs.writeFileString(workerFile, transcript);
+      const threadId = ThreadId.make("omp-worker-parent");
+      const driver = ProviderDriverKind.make("omp");
+      const instanceId = ProviderInstanceId.make("omp");
+      const modelSelection = { instanceId, model: "fixture/test" };
+      const providerThreadId = ProviderThreadId.make("omp-worker-source");
+      const runId = RunId.make("omp-worker-run");
+      const worker = NodeId.make("omp-worker");
+      const target = completedWorkerThreadId(header.id, worker);
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const sink = yield* EventSink.EventSinkV2;
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("omp-create"),
+        threadId,
+        projectId: ProjectId.make("omp-project"),
+        title: "OMP",
+        modelSelection,
+        runtimeMode: "approval-required",
+        interactionMode: "default",
+        branch: "test",
+        worktreePath: cwd,
+        createdBy: "user",
+        creationSource: "web",
+      });
+      yield* sink.write({
+        events: [
+          {
+            type: "provider-thread.updated",
+            id: EventId.make("worker-provider-created"),
+            threadId,
+            occurredAt: now,
+            payload: {
+              id: providerThreadId,
+              driver,
+              providerInstanceId: instanceId,
+              providerSessionId: null,
+              appThreadId: threadId,
+              ownerNodeId: null,
+              nativeThreadRef: { driver, nativeId: parent, strength: "strong" },
+              nativeConversationHeadRef: null,
+              status: "idle",
+              firstRunOrdinal: 1,
+              lastRunOrdinal: 1,
+              handoffIds: [],
+              forkedFrom: null,
+              createdAt: now,
+              updatedAt: now,
+            },
+          },
+          {
+            type: "run.created",
+            id: EventId.make("worker-run-created"),
+            threadId,
+            runId,
+            occurredAt: now,
+            payload: {
+              id: runId,
+              threadId,
+              ordinal: 1,
+              providerInstanceId: instanceId,
+              modelSelection,
+              providerThreadId,
+              userMessageId: MessageId.make("worker-message"),
+              rootNodeId: null,
+              activeAttemptId: null,
+              status: "completed",
+              requestedAt: now,
+              startedAt: now,
+              completedAt: now,
+              checkpointId: null,
+              contextHandoffId: null,
+            },
+          },
+          {
+            type: "subagent.updated",
+            id: EventId.make("worker-finished"),
+            threadId,
+            runId,
+            occurredAt: now,
+            payload: {
+              id: worker,
+              threadId,
+              runId,
+              parentNodeId: NodeId.make("task-tool"),
+              origin: "provider_native",
+              createdBy: "agent",
+              driver,
+              providerInstanceId: instanceId,
+              providerThreadId,
+              childThreadId: null,
+              nativeTaskRef: { driver, nativeId: "Alpha", strength: "strong" },
+              nativeWorkerSessionId: header.id,
+              prompt: "Original assignment",
+              title: "Alpha",
+              model: "fixture/worker",
+              status: "completed",
+              result: "Finished",
+              startedAt: now,
+              completedAt: now,
+              updatedAt: now,
+            },
+          },
+        ],
+      });
+      const command = {
+        type: "thread.fork",
+        sourceThreadId: threadId,
+        targetThreadId: target,
+        sourcePoint: { type: "completed_subagent", runId, subagentId: worker },
+        createdBy: "user",
+        creationSource: "web",
+      } as const;
+      yield* fs.writeFileString(workerFile, transcript.replace(header.id, "different-worker"));
+      assert.equal(
+        (yield* orchestrator
+          .dispatch({ ...command, commandId: CommandId.make("wrong-worker") })
+          .pipe(Effect.flip))._tag,
+        "OrchestratorDispatchError",
+      );
+      assert.isNull(yield* orchestrator.getThreadShell(target));
+      yield* fs.writeFileString(workerFile, transcript);
+      yield* orchestrator.dispatch({ ...command, commandId: CommandId.make("open-worker") });
+      yield* orchestrator.dispatch({ ...command, commandId: CommandId.make("reopen-worker") });
+      const result = yield* orchestrator.getThreadProjection(target);
+      assert.equal(result.thread.lineage.relationshipToParent, "fork");
+      assert.equal(result.thread.runtimeMode, "approval-required");
+      assert.equal(result.thread.modelSelection.model, "fixture/worker");
+      assert.deepEqual(result.messages.map((message) => message.text).sort(), [
+        "Finished",
+        "Original assignment",
+      ]);
+      const persisted = result.providerThreads.find(
+        (pt) => pt.id === result.thread.activeProviderThreadId,
+      );
+      const copy = persisted?.nativeThreadRef?.nativeId;
+      assert.isOk(copy);
+      assert.notEqual(copy, workerFile);
+      assert.deepEqual((yield* fs.readFileString(copy)).split("\n").slice(1), [entry, ""]);
+      assert.equal(yield* fs.readFileString(workerFile), transcript);
+    }).pipe(Effect.provide(Layer.merge(ompForkLayer, NodeServices.layer))),
+);
 
 it.effect("a persisted fork leaves PR watching with its parent until explicitly opted in", () =>
   Effect.gen(function* () {

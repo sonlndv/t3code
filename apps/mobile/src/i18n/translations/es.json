@@ -5611,5 +5611,11 @@
   "8d545d54c0a9e950": "Oculta los comandos, ediciones y búsquedas que ejecutan los agentes. Ocultar las correctas mantiene los fallos. Zen solo muestra las respuestas finales. Las aprobaciones, preguntas y errores siempre se muestran.",
   "99d51127f573296b": "Otra cuenta",
   "8ec2c57414669b79": "Conecta un segundo espacio de trabajo o usuario de {tracker}.",
-  "892f08d21b8e48a9": "Fusionar {layers} en {base} con {kind, select, squash {squash} merge {merge} rebase {rebase} fastForward {fast-forward} other {{method}}} cuando se cumplan sus requisitos. Puede ocurrir de inmediato."
+  "892f08d21b8e48a9": "Fusionar {layers} en {base} con {kind, select, squash {squash} merge {merge} rebase {rebase} fastForward {fast-forward} other {{method}}} cuando se cumplan sus requisitos. Puede ocurrir de inmediato.",
+  "88ddb8c480f0642d": "No se pudo abrir el hilo",
+  "25239403bba45805": "Continuar en el chat",
+  "9ee30026fe8d069b": "¿Volver al punto anterior a este mensaje?",
+  "b3c431b01e65101f": "Los turnos posteriores se eliminarán de este chat. Tus archivos se conservarán.",
+  "22b3c49b2a434be2": "Retroceder en la conversación",
+  "6c564f3a631a0ee7": "El hilo ha cambiado. Vuelve a seleccionar un mensaje para retroceder."
 }
